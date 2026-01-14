@@ -1,0 +1,92 @@
+{
+  "name": "flowdesk",
+  "version": "1.2.0",
+  "description": "FlowDesk - Multi-account session manager for Flipkart and Shopsy",
+  "main": "dist/electron/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/cli.ts",
+    "dev": "tsx src/cli.ts",
+    "lint": "eslint src/**/*.ts",
+    "app:dev": "concurrently \"npm run watch\" \"wait-on dist/electron/main.js && electron .\"",
+    "app:build": "npm run build && electron-builder",
+    "postinstall": "electron-builder install-app-deps",
+    "watch": "tsc -w"
+  },
+  "build": {
+    "appId": "com.ogworks.flowdesk",
+    "productName": "FlowDesk",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "${productName}-${version}-Mac.${ext}"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "${productName}-${version}-Win.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "directories": {
+      "output": "release"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "fs-automation-pro"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "src/electron/ui/**/*",
+      "package.json"
+    ]
+  },
+  "keywords": [
+    "flipkart",
+    "shopsy",
+    "automation",
+    "playwright"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "adm-zip": "^0.5.10",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "electron-updater": "^6.7.3",
+    "fs-extra": "^11.2.0",
+    "imap-simple": "^5.1.0",
+    "inquirer": "^9.2.12",
+    "mailparser": "^3.9.1",
+    "playwright": "^1.40.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/fs-extra": "^11.0.4",
+    "@types/imap-simple": "^4.2.10",
+    "@types/inquirer": "^9.0.9",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^20.10.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "wait-on": "^9.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

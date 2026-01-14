@@ -1,0 +1,6 @@
+node_modules/
+dist/
+data/profiles/
+data/encrypted/
+data/logs/
+.DS_Store
