@@ -2,7 +2,7 @@ import { BrowserContext } from 'playwright';
 import fs from 'fs-extra';
 import path from 'path';
 import { ACCOUNTS_FILE, DATA_DIR, PROFILES_DIR, ENCRYPTED_DIR } from './config.js';
-import { pushAccounts, pushCookies } from './cloud.js';
+import { pushAccounts, pushAccount, pushCookies, deleteCloudAccount } from './cloud.js';
 
 const COOKIES_DIR = path.join(DATA_DIR, 'cookies');
 
@@ -18,6 +18,7 @@ export type AccountStatus =
 
 export interface Account {
     id: string;
+    userId?: string;            // Added for user isolation
     platform: Platform;
     loginType: LoginType;
     identifier: string;         // email or mobile number
@@ -121,6 +122,8 @@ export async function upsertAccount(account: Partial<Account> & { id: string; pl
             ...existing,
             ...account,
             updatedAt: now,
+            // Preserve userId if not provided in update
+            userId: account.userId || existing.userId
         };
         data.accounts[existingIndex] = updated;
         await saveAccounts(data);
@@ -133,11 +136,13 @@ export async function upsertAccount(account: Partial<Account> & { id: string; pl
             status: 'New',
             createdAt: now,
             updatedAt: now,
+
             ...account,
             id: id // Force standardized ID
         };
         data.accounts.push(newAccount);
         await saveAccounts(data);
+        await pushAccount(newAccount); // Ensure cloud has it immediately
         return newAccount;
     }
 }
@@ -163,6 +168,7 @@ export async function updateAccountStatus(
             account.errorCode = errorCode;
         }
         await saveAccounts(data);
+        await pushAccount(account); // Sync status change
     }
 }
 
@@ -176,10 +182,13 @@ export async function updateLastLogin(accountId: string): Promise<void> {
     if (account) {
         account.lastLoginAt = new Date().toISOString();
         account.lastValidateAt = account.lastLoginAt;
+        account.updatedAt = account.lastLoginAt;
+        account.lastValidateAt = account.lastLoginAt;
         account.status = 'Healthy';
         account.updatedAt = account.lastLoginAt;
         delete account.errorCode;
         await saveAccounts(data);
+        await pushAccount(account); // Sync health/login time
     }
 }
 
@@ -230,6 +239,17 @@ export async function deleteAccount(accountId: string): Promise<boolean> {
             if (await fs.pathExists(encPath)) {
                 await fs.remove(encPath);
             }
+
+            // 4. Delete Local Storage File
+            const lsPath = path.join(DATA_DIR, 'storage', `${id}_${account.platform}.json`);
+            if (await fs.pathExists(lsPath)) {
+                await fs.remove(lsPath);
+            }
+
+            // 5. Delete from Cloud
+            await deleteCloudAccount(id).catch(err => {
+                console.error(`[Cloud] Background deletion failed for ${id}:`, err);
+            });
         } catch (e) {
             console.error(`Failed to cleanup files for ${id}:`, e);
         }

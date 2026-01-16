@@ -7,48 +7,105 @@ import { getCookieFilePath } from './cookies.js';
 import { getStorageFilePath } from './localStorage.js';
 import logger from './log.js';
 
-let supabase: SupabaseClient | null = null;
+let supabaseClient: SupabaseClient | null = null;
+let supabaseAdminClient: SupabaseClient | null = null;
+
+// Helper to get config
+function getSupabaseConfig() {
+    const settings = getSettings();
+
+    // URL
+    const envUrl = process.env.SUPABASE_URL;
+    const url = envUrl || settings.cloudConfig?.url;
+
+    // Keys
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLIC_KEY || process.env.SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    // Enabled check
+    // We consider it enabled if we have a URL and at least one key
+    const enabled = settings.cloudConfig?.enabled !== false && (!!url && (!!anonKey || !!serviceRoleKey));
+
+    return { url, anonKey, serviceRoleKey, enabled };
+}
 
 /**
- * Initialize Supabase client if enabled
- * Prioritizes environment variables over settings.json
+ * Get Supabase Client (Anon/Public) - Use for Auth & User User operations
  */
-export function getSupabase() {
-    const settings = getSettings();
-    const envUrl = process.env.SUPABASE_URL;
-    const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+export function getSupabaseClient() {
+    const { url, anonKey, enabled } = getSupabaseConfig();
 
-    const url = envUrl || settings.cloudConfig?.url;
-    const key = envKey || settings.cloudConfig?.key;
-    const enabled = settings.cloudConfig?.enabled !== false && (!!url && !!key);
-
-    if (!enabled || !url || !key) {
-        if (settings.cloudConfig?.enabled === false) {
-            logger.debug('[Cloud] Supabase sync is explicitly disabled in settings.');
-        } else {
-            logger.warn('[Cloud] Supabase configuration (URL/Key) is missing in both .env and settings.');
+    if (!enabled || !url || !anonKey) {
+        // Silent fail or warn depending on context? 
+        // If we need auth but don't have anon key, it's an issue.
+        if (enabled && url && !anonKey) {
+            logger.warn('[Cloud] Supabase Anon Key is missing. Auth flows may fail.');
         }
         return null;
     }
 
-    if (!supabase) {
+    if (!supabaseClient) {
         try {
-            supabase = createClient(url, key);
-            logger.info(`[Cloud] Supabase client initialized via ${envUrl ? '.env' : 'settings.json'}.`);
+            const keyUsed = anonKey;
+            const maskedKey = keyUsed ? (keyUsed.substring(0, 5) + '...' + keyUsed.substring(keyUsed.length - 5)) : 'NONE';
+            logger.info(`[Cloud] Supabase Anon Client initializing with URL: ${url} and Key: ${maskedKey}`);
+
+            supabaseClient = createClient(url, anonKey);
+            logger.info(`[Cloud] Supabase Anon Client initialized.`);
         } catch (e: any) {
-            logger.error(`[Cloud] Failed to initialize Supabase client: ${e.message}`);
+            logger.error(`[Cloud] Failed to initialize Supabase Anon Client: ${e.message}`);
             return null;
         }
     }
-    return supabase;
+    return supabaseClient;
+}
+
+/**
+ * Get Supabase Admin Client (Service Role) - Use for Data Sync & Admin operations
+ */
+export function getSupabaseAdminClient() {
+    const { url, serviceRoleKey, enabled } = getSupabaseConfig();
+
+    if (!enabled || !url || !serviceRoleKey) {
+        if (enabled && url && !serviceRoleKey) {
+            logger.warn('[Cloud] Supabase Service Role Key is missing. Sync flows will fail.');
+        }
+        return null;
+    }
+
+    if (!supabaseAdminClient) {
+        try {
+            supabaseAdminClient = createClient(url, serviceRoleKey, {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false
+                }
+            });
+            logger.info(`[Cloud] Supabase Admin Client initialized.`);
+        } catch (e: any) {
+            logger.error(`[Cloud] Failed to initialize Supabase Admin Client: ${e.message}`);
+            return null;
+        }
+    }
+    return supabaseAdminClient;
+}
+
+/**
+ * Legacy accessor - Defaults to Admin client for backward compatibility in this file context,
+ * but specifically for Auth it should NOT be used.
+ * @deprecated Use getSupabaseClient() or getSupabaseAdminClient() explicitly.
+ */
+export function getSupabase() {
+    return getSupabaseAdminClient() || getSupabaseClient();
 }
 
 /**
  * Health check for Supabase connection & tables
+ * Uses Admin access to check table existence reliably
  */
 export async function checkCloudConnection() {
-    const client = getSupabase();
-    if (!client) return { success: false, message: 'Cloud sync not configured.' };
+    const client = getSupabaseAdminClient();
+    if (!client) return { success: false, message: 'Cloud sync (Admin) not configured.' };
 
     try {
         // More robust check: try to select one row from accounts
@@ -67,10 +124,52 @@ export async function checkCloudConnection() {
 }
 
 /**
+ * Push a single account to cloud
+ */
+export async function pushAccount(acc: any) {
+    const client = getSupabaseAdminClient();
+    if (!client) return;
+
+    try {
+        const payload: any = {
+            id: acc.id.toLowerCase(),
+            platform: acc.platform,
+            identifier: acc.identifier,
+            status: acc.status,
+            last_login_at: acc.lastLoginAt || null,
+            details: {
+                loginType: acc.loginType,
+                emailConfig: acc.emailConfig,
+                assignedTo: acc.assignedTo,
+                createdAt: acc.createdAt,
+                updatedAt: acc.updatedAt,
+                errorCode: acc.errorCode
+            },
+            updated_at: new Date().toISOString()
+        };
+
+        if (acc.userId) {
+            payload.user_id = acc.userId;
+        }
+
+        // logger.debug(`[Cloud] Pushing account payload: ${JSON.stringify(payload)}`);
+
+        const { error } = await client
+            .from('accounts')
+            .upsert(payload, { onConflict: 'id' });
+
+        if (error) throw error;
+        logger.debug(`[Cloud] Synced single account: ${acc.id}`);
+    } catch (e: any) {
+        logger.error(`[Cloud] pushAccount failed for ${acc.id}: ${e.message}`);
+    }
+}
+
+/**
  * Push accounts.json to cloud (SQL Table: accounts)
  */
 export async function pushAccounts() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) {
         logger.debug('[Cloud] pushAccounts: Cloud sync not enabled or configured.');
         return;
@@ -83,7 +182,7 @@ export async function pushAccounts() {
 
         for (const acc of accounts) {
             // Flatten/Structure data for SQL
-            const payload = {
+            const payload: any = {
                 id: acc.id.toLowerCase(),
                 platform: acc.platform,
                 identifier: acc.identifier,
@@ -99,6 +198,11 @@ export async function pushAccounts() {
                 },
                 updated_at: new Date().toISOString()
             };
+
+            // Only send user_id if we have it, otherwise let DB default or keep existing
+            if (acc.userId) {
+                payload.user_id = acc.userId;
+            }
 
             const { error } = await client
                 .from('accounts')
@@ -117,7 +221,7 @@ export async function pushAccounts() {
  * Push ALL cookies from local files to cloud (for initial sync)
  */
 export async function pushAllCookies() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) {
         logger.debug('[Cloud] pushAllCookies: Cloud sync not enabled.');
         return;
@@ -145,7 +249,7 @@ export async function pushAllCookies() {
  * Push specific cookie file to cloud (SQL Table: cookies)
  */
 export async function pushCookies(accountId: string, platform: 'flipkart' | 'shopsy') {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
@@ -201,7 +305,7 @@ export async function pushCookies(accountId: string, platform: 'flipkart' | 'sho
  * Push Local Storage to cloud (SQL Table: local_storage)
  */
 export async function pushLocalStorage(accountId: string, platform: 'flipkart' | 'shopsy') {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
@@ -234,7 +338,7 @@ export async function pushLocalStorage(accountId: string, platform: 'flipkart' |
  * Fetch Local Storage from cloud
  */
 export async function fetchLocalStorage(accountId: string, platform: 'flipkart' | 'shopsy'): Promise<Record<string, string> | null> {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return null;
 
     try {
@@ -268,7 +372,7 @@ export async function fetchLocalStorage(accountId: string, platform: 'flipkart' 
  * Fetch cookies for a specific account from cloud database
  */
 export async function fetchCookiesFromCloud(accountId: string, platform: 'flipkart' | 'shopsy'): Promise<any[]> {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return [];
 
     try {
@@ -319,7 +423,7 @@ export async function fetchCookiesFromCloud(accountId: string, platform: 'flipka
  * Pull all data from cloud (for new device setup)
  */
 export async function pullSyncData() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return { success: false, error: 'Cloud sync not enabled' };
 
     try {
@@ -401,7 +505,7 @@ export async function pullSyncData() {
  * Log user activity to Supabase
  */
 export async function logActivity(username: string, action: string, data: any = {}) {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
@@ -429,7 +533,7 @@ export async function logActivity(username: string, action: string, data: any = 
  * Report error to Supabase
  */
 export async function reportError(username: string, message: string, stack?: string, context: any = {}) {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
@@ -453,47 +557,83 @@ export async function reportError(username: string, message: string, stack?: str
 }
 
 /**
- * Fetch centralized users from Supabase
+ * Fetch centralized users from Supabase (from profiles table)
+ * Returns all users except their password hashes
  */
 export async function fetchCloudUsers() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return null;
 
     try {
-        const { data, error } = await client.from('app_users').select('*');
-        if (error) throw error;
-        return data;
-    } catch (e) {
-        logger.error(`[Cloud] Failed to fetch users: ${e}`);
+        // Select all and filter in code to avoid column name issues
+        const { data, error } = await client
+            .from('profiles')
+            .select('*');
+
+        if (error) {
+            logger.error(`[Cloud] Failed to fetch users: ${error.message}`);
+            return null;
+        }
+
+        if (!data || data.length === 0) {
+            logger.info('[Cloud] No users found in profiles table');
+            return [];
+        }
+
+        // Map to frontend-expected format, excluding password_hash
+        return data.map((u: any) => ({
+            username: u.username,
+            role: u.role || 'user',
+            allowedAccounts: u.allowed_accounts || 10,
+            createdAt: u.created_at
+        }));
+    } catch (e: any) {
+        logger.error(`[Cloud] fetchCloudUsers exception: ${e.message}`);
         return null;
     }
 }
 
 /**
- * Upsert user in Supabase (Admin Only)
+ * Update user settings in Supabase profiles table (Admin Only)
+ * Note: For creating new users, use signUpSupabase instead
  */
 export async function upsertCloudUser(user: any) {
-    const client = getSupabase();
-    if (!client) return;
-    const { error } = await client.from('app_users').upsert(user);
+    const client = getSupabaseAdminClient();
+    if (!client) throw new Error('Cloud sync not configured');
+
+    const { error } = await client
+        .from('profiles')
+        .update({
+            role: user.role || 'user',
+            allowed_accounts: user.allowedAccounts || 10
+        })
+        .eq('username', user.username?.toLowerCase());
+
     if (error) throw error;
+    logger.info(`[Cloud] Updated user settings: ${user.username}`);
 }
 
 /**
- * Delete user from Supabase
+ * Delete user from Supabase profiles table
  */
 export async function deleteCloudUser(username: string) {
-    const client = getSupabase();
-    if (!client) return;
-    const { error } = await client.from('app_users').delete().eq('username', username);
+    const client = getSupabaseAdminClient();
+    if (!client) throw new Error('Cloud sync not configured');
+
+    const { error } = await client
+        .from('profiles')
+        .delete()
+        .eq('username', username.toLowerCase());
+
     if (error) throw error;
+    logger.info(`[Cloud] Deleted user: ${username}`);
 }
 
 /**
  * Fetch recent activity logs from Supabase
  */
 export async function fetchActivityLogs() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return [];
 
     try {
@@ -514,7 +654,7 @@ export async function fetchActivityLogs() {
  * Fetch recent app errors from Supabase
  */
 export async function fetchAppErrors() {
-    const client = getSupabase();
+    const client = getSupabaseAdminClient();
     if (!client) return [];
 
     try {
@@ -528,5 +668,42 @@ export async function fetchAppErrors() {
     } catch (e) {
         logger.error(`[Cloud] Failed to fetch app errors: ${e}`);
         return [];
+    }
+}
+
+/**
+ * Delete account and all associated data from cloud
+ */
+export async function deleteCloudAccount(accountId: string) {
+    const client = getSupabaseAdminClient();
+    if (!client) return;
+
+    const id = accountId.toLowerCase().trim();
+    try {
+        // 1. Delete cookies
+        const { error: cookError } = await client
+            .from('cookies')
+            .delete()
+            .eq('account_id', id);
+        if (cookError) throw cookError;
+
+        // 2. Delete local storage
+        const { error: lsError } = await client
+            .from('local_storage')
+            .delete()
+            .eq('account_id', id);
+        if (lsError) throw lsError;
+
+        // 3. Delete account record
+        const { error: accError } = await client
+            .from('accounts')
+            .delete()
+            .eq('id', id);
+        if (accError) throw accError;
+
+        logger.info(`[Cloud] Deleted account and all data for ${id}`);
+    } catch (e: any) {
+        logger.error(`[Cloud] Deletion failed for ${id}: ${e.message}`);
+        throw e;
     }
 }

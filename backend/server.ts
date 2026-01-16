@@ -12,11 +12,27 @@ import { checkAccountHealth as checkHealthLogic } from './src/check/health.js';
 import { refreshSession as refreshSessionLogic } from './src/refresh/flow.js';
 import { loginFlipkart } from './src/login/flipkart.js';
 import { loginShopsy } from './src/login/shopsy.js';
+import { signUpSupabase, signInSupabase, verifySession } from './src/auth_supabase.js';
 
 const fastify = Fastify({ logger: true });
 
 await fastify.register(cors, {
-    origin: '*', // Allow all for local desktop app
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+});
+
+// Allow DELETE requests with Content-Type: application/json and empty body
+fastify.addContentTypeParser('application/json', { parseAs: 'string' }, function (req, body, done) {
+    if (body === '' || body === null || body === undefined) {
+        done(null, null);
+    } else {
+        try {
+            const json = JSON.parse(body as string);
+            done(null, json);
+        } catch (err: any) {
+            done(err, undefined);
+        }
+    }
 });
 
 // Health check
@@ -26,20 +42,104 @@ fastify.get('/api/health', async (request, reply) => {
 
 // Accounts
 fastify.get('/api/accounts', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    let userId: string | undefined;
+
+    // Check for auth token
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        const session = await verifySession(token);
+        if (session) {
+            userId = session.id;
+        }
+    }
+
     const data = await loadAccounts();
-    return data;
+
+    // If authenticated, filter by userId
+    // If NOT authenticated, show NOTHING (or public accounts if any, but let's be strict for isolation)
+    if (!userId) {
+        // If user is not logged in, they shouldn't see any accounts ideally. 
+        // But for backward compatibility during dev, maybe we allow it? 
+        // User requested: "show just the ids that the user added"
+        // So strict filtering is better.
+        return { accounts: [] };
+    }
+
+    // Filter: Include accounts that match userId OR have no userId (legacy/admin-created?) 
+    // Actually, "no userId" accounts should probably be visible to everyone or no one?
+    // Let's strict filter: matches userId. 
+    // BUT we must also consider the Admin role.
+    // If role is admin, show all? User request didn't specify admin, but usually admins see all.
+    // Let's implement: Users see their own. Admin sees all? 
+    // "wit h eth role user profiles os in teh ui when i sing in with user then show just teh ids thath teh user added"
+    // Implies users only see theirs.
+
+    // Check role if we have it
+    const session = await verifySession(authHeader!.split(' ')[1]);
+    if (session?.role === 'admin') {
+        return data;
+    }
+
+    const filtered = data.accounts.filter(a => a.userId === userId);
+    return { accounts: filtered };
 });
 
 fastify.post('/api/accounts', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    let userId: string | undefined;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        const session = await verifySession(token);
+        if (session) {
+            userId = session.id;
+        }
+    }
+
+    if (!userId) {
+        return reply.status(401).send({ success: false, message: 'Unauthorized' });
+    }
+
     const body = request.body as any;
+    // Enforce userId ownership
+    body.userId = userId;
+
     const account = await upsertAccount(body);
     return account;
 });
 
 fastify.delete('/api/accounts/:id', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const result = await deleteAccount(id);
-    return { success: result };
+    // Add Auth Check
+    const authHeader = request.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return reply.status(401).send({ success: false, message: 'Unauthorized' });
+    }
+    const token = authHeader.split(' ')[1];
+    const session = await verifySession(token);
+    if (!session) {
+        return reply.status(401).send({ success: false, message: 'Invalid session' });
+    }
+
+    try {
+        const { id } = request.params as { id: string };
+        const decodedId = decodeURIComponent(id);
+
+        // Check ownership before delete if not admin
+        if (session.role !== 'admin') {
+            const account = await getAccount(decodedId);
+            if (account && account.userId && account.userId !== session.id) {
+                return reply.status(403).send({ success: false, message: 'Forbidden' });
+            }
+        }
+
+        console.log(`[API] Deleting account: ${decodedId}`);
+        const result = await deleteAccount(decodedId);
+        return { success: result };
+    } catch (e: any) {
+        console.error('[API] Delete account error:', e);
+        return reply.status(500).send({ success: false, error: e.message });
+    }
 });
 
 // Settings
@@ -54,6 +154,37 @@ fastify.post('/api/settings', async (request, reply) => {
     saveSettings(body);
     return { success: true };
 });
+
+// Auth (Supabase)
+fastify.post('/api/auth/signup', async (request, reply) => {
+    const { username, password } = request.body as any;
+    if (!username || !password) {
+        return reply.status(400).send({ success: false, message: 'Username and password are required' });
+    }
+    return await signUpSupabase(username, password);
+});
+
+fastify.post('/api/auth/signin', async (request, reply) => {
+    const { username, password } = request.body as any;
+    if (!username || !password) {
+        return reply.status(400).send({ success: false, message: 'Username and password are required' });
+    }
+    return await signInSupabase(username, password);
+});
+
+fastify.get('/api/auth/me', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return reply.status(401).send({ success: false, message: 'Unauthorized' });
+    }
+    const token = authHeader.split(' ')[1];
+    const session = await verifySession(token);
+    if (!session) {
+        return reply.status(401).send({ success: false, message: 'Invalid or expired session' });
+    }
+    return { success: true, session };
+});
+
 
 // Operations
 fastify.post('/api/check/:id', async (request, reply) => {
@@ -124,6 +255,7 @@ fastify.post('/api/session', async (request, reply) => {
         const result = await openSession({ accountId, platform });
         return result;
     } catch (error) {
+        console.error('[Session Error Detail]:', error);
         return { status: 'error', message: String(error) };
     }
 });
@@ -178,13 +310,35 @@ fastify.get('/api/admin/users', async (request, reply) => {
 
 fastify.post('/api/admin/users', async (request, reply) => {
     const body = request.body as any;
-    // Try to save to cloud if possible, also save local as backup? 
-    // Or just prefer cloud. 
+    const { username, password, role } = body;
+
+    if (!username || !password) {
+        return reply.status(400).send({ success: false, message: 'Username and password are required' });
+    }
+
+    // Use signUpSupabase to create user in profiles table with proper password hash
     try {
-        await upsertCloudUserFn(body);
-        return { success: true, source: 'cloud' };
-    } catch (e) {
-        return await upsertUser(body);
+        const result = await signUpSupabase(username, password);
+
+        if (!result.success) {
+            return { success: false, message: result.message };
+        }
+
+        // If role specified (not user default), update the profile
+        if (role && role !== 'user') {
+            const { getSupabaseAdminClient } = await import('./src/cloud.js');
+            const client = getSupabaseAdminClient();
+            if (client) {
+                await client
+                    .from('profiles')
+                    .update({ role: role })
+                    .eq('username', username.toLowerCase());
+            }
+        }
+
+        return { success: true, message: 'User created successfully', source: 'cloud' };
+    } catch (e: any) {
+        return { success: false, message: e.message };
     }
 });
 
@@ -217,9 +371,15 @@ const start = async () => {
         }
 
         const port = parseInt(process.env.PORT || '3001');
-        // Initial sync push to cloud
-        pushAccounts().catch(e => console.error('Initial account sync failed:', e));
-        pushAllCookies().catch(e => console.error('Initial cookie sync failed:', e));
+
+        // Initial sync push to cloud - Serialize to avoid FK errors (Account must exist before Cookies)
+        try {
+            await pushAccounts();
+            // Only push cookies after accounts are safely in DB
+            pushAllCookies().catch(e => console.error('Initial cookie sync failed:', e));
+        } catch (e) {
+            console.error('Initial account sync failed:', e);
+        }
 
         await fastify.listen({ port, host: '0.0.0.0' });
         console.log(`Server listening on port ${port}`);

@@ -42,17 +42,17 @@ export async function loginShopsy(options: LoginOptions) {
     try {
         context = await chromium.launchPersistentContext(profilePath, {
             headless: headless,
-            viewport: fingerprint.viewport,
+            viewport: null, // Desktop view
             userAgent: fingerprint.userAgent,
-            deviceScaleFactor: fingerprint.deviceScaleFactor,
-            hasTouch: fingerprint.hasTouch,
-            isMobile: fingerprint.isMobile,
+            // Remove mobile emulation flags
             locale: fingerprint.locale,
             timezoneId: fingerprint.timezoneId,
             permissions: ['geolocation', 'notifications'],
             args: [
                 '--disable-blink-features=AutomationControlled',
-                '--no-sandbox'
+                '--no-sandbox',
+                '--window-size=1280,720',
+                '--window-position=50,50'
             ]
         });
     } catch (e: any) {
@@ -68,17 +68,17 @@ export async function loginShopsy(options: LoginOptions) {
 
             context = await chromium.launchPersistentContext(profilePath, {
                 headless: headless,
-                viewport: fingerprint.viewport,
+                viewport: null, // Desktop view
                 userAgent: fingerprint.userAgent,
-                deviceScaleFactor: fingerprint.deviceScaleFactor,
-                hasTouch: fingerprint.hasTouch,
-                isMobile: fingerprint.isMobile,
+                // Remove mobile flags
                 locale: fingerprint.locale,
                 timezoneId: fingerprint.timezoneId,
                 permissions: ['geolocation', 'notifications'],
                 args: [
                     '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox'
+                    '--no-sandbox',
+                    '--window-size=1280,720',
+                    '--window-position=50,50'
                 ]
             });
         } else {
@@ -99,22 +99,32 @@ export async function loginShopsy(options: LoginOptions) {
 
         // Basic check for logged in state
         const isLoggedIn = await Promise.race([
-            page.waitForSelector('text=Account', { timeout: 3000 }).then(() => true), // Assuming mobile menu
-            // Shopsy web might redirect to login if not authenticated on some routes?
-            // Checking for a known "logged in" element.
-            // On mobile web, usually there is a bottom nav or hamburger menu.
-            new Promise(r => setTimeout(() => r(false), 3500))
-        ]);
+            page.waitForSelector('text=Account', { timeout: 8000 }).then(() => true).catch(() => false),
+            page.waitForSelector('text=My Orders', { timeout: 8000 }).then(() => true).catch(() => false),
+            page.waitForSelector('a[href*="/account"]', { timeout: 8000 }).then(() => true).catch(() => false),
+            new Promise(r => setTimeout(() => r(false), 9000))
+        ]) as boolean;
 
         if (isLoggedIn) {
-            // Deep check to see if really logged in?
-            // For now assume if we don't see "Login" buttons we might be good.
-            // But Shopsy mobile web often pushes for App install.
-        }
+            log.info('Detected automatic login via Flipkart cookies! Skipping manual steps.');
 
-        // Since Shopsy web is limited, we might just be logging into Flipkart Mobile Web which Shopsy uses?
-        // Actually Shopsy has its own domain now.
-        // If Shopsy Web login is identical to Flipkart, we adapt.
+            // Allow session to settle
+            await page.waitForTimeout(3000);
+
+            try {
+                const { extractAndSaveCookies } = await import('../cookies.js');
+                await extractAndSaveCookies(context, accountId, 'shopsy');
+            } catch (e: any) {
+                log.warn(`Cookie extraction skipped for shopsy: ${e.message}`);
+            }
+
+            try { await pushCookies(accountId, 'shopsy'); } catch { }
+
+            if (!keepOpen) await context.close();
+            await saveProfileToDisk(platform, accountId);
+            await updateLastLogin(accountId);
+            return { status: 'success', message: 'Automatic login completed via Flipkart session' };
+        }
 
         log.info('Instructions: Please log in using the mobile web interface shown.');
 

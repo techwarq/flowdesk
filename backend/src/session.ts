@@ -6,7 +6,7 @@ import { generateFingerprint } from './fingerprint.js';
 import logger, { getAccountLogger } from './log.js';
 import { loadCookiesFromDisk, extractAndSaveCookies, adaptCookiesForShopsy } from './cookies.js';
 import { browsers } from './browserManager.js';
-import { pushCookies, fetchCookiesFromCloud, fetchLocalStorage } from './cloud.js';
+import { pushCookies, fetchCookiesFromCloud, fetchLocalStorage, pushLocalStorage, getSupabase } from './cloud.js';
 import { loadLocalStorage, saveLocalStorage } from './localStorage.js';
 
 export interface SessionOptions {
@@ -32,35 +32,49 @@ export async function openSession(options: SessionOptions) {
     const fingerprint = generateFingerprint(platform, accountId);
     const lockFile = path.join(profilePath, 'SingletonLock');
 
+    console.log(`[Session] Opening ${platform} for ${accountId}`);
+    console.log(`[Session] Profile path: ${profilePath}`);
+    console.log(`[Session] Active browsers: ${browsers.isActive(accountId) ? 'Yes' : 'No'}`);
+
     log.info(`Opening ${platform} session for ${accountId}`);
 
     // Proactive unlock
     try {
         if (await fs.pathExists(lockFile)) {
+            console.log(`[Session] Removing stale lock file: ${lockFile}`);
             await fs.remove(lockFile);
         }
-    } catch (err) { }
+    } catch (err) {
+        console.log(`[Session] Could not remove lock file:`, err);
+    }
 
     // FORCE FRESH PROFILE for debugging:
     // This ensures we are testing the JSON cookies purely, without interference from stale browser cache.
-    if (await fs.pathExists(profilePath)) {
-        await fs.emptyDir(profilePath);
-        log.info('[DEBUG-ANTIGRAVITY] cleared profile directory for fresh cookie test.');
-    }
+    // if (await fs.pathExists(profilePath)) {
+    //    await fs.emptyDir(profilePath);
+    //    log.info('[DEBUG-ANTIGRAVITY] cleared profile directory for fresh cookie test.');
+    // }
 
     let context: BrowserContext;
 
     try {
         log.info(`[DEBUG-ANTIGRAVITY] Launching with UA: ${fingerprint.userAgent}`);
+
+        // For BOTH Flipkart and Shopsy, use null viewport + fixed window size for consistent Desktop experience.
+        const viewport = null;
+
         context = await chromium.launchPersistentContext(profilePath, {
             headless: false,
-            viewport: fingerprint.viewport,
-            userAgent: fingerprint.userAgent,
+            viewport: viewport,
+            userAgent: fingerprint.userAgent, // Ensure this is a Desktop UA from fingerprint.ts
             locale: fingerprint.locale,
             timezoneId: fingerprint.timezoneId,
             args: [
                 '--disable-blink-features=AutomationControlled',
-                '--no-sandbox'
+                '--no-sandbox',
+                // Fixed window size for all platforms
+                '--window-size=1280,720',
+                '--window-position=50,50'
             ]
         });
     } catch (e: any) {
@@ -72,15 +86,19 @@ export async function openSession(options: SessionOptions) {
                 }
             } catch (err) { }
 
+            const viewport = null;
+
             context = await chromium.launchPersistentContext(profilePath, {
                 headless: false,
-                viewport: fingerprint.viewport,
+                viewport: viewport,
                 userAgent: fingerprint.userAgent,
                 locale: fingerprint.locale,
                 timezoneId: fingerprint.timezoneId,
                 args: [
                     '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox'
+                    '--no-sandbox',
+                    '--window-size=1280,720',
+                    '--window-position=50,50'
                 ]
             });
         } else {
@@ -121,13 +139,15 @@ export async function openSession(options: SessionOptions) {
                 log.info(`Found ${cookies.length} Shopsy cookies`);
             }
         } else {
-            // For Flipkart: Try cloud DB first (User Request)
-            cookies = await fetchCookiesFromCloud(accountId, 'flipkart');
+            // For Flipkart: Try cloud DB first
+            if (getSupabase()) {
+                cookies = await fetchCookiesFromCloud(accountId, 'flipkart');
+            }
 
             if (cookies.length === 0) {
                 // Fallback to local disk
                 cookies = await loadCookiesFromDisk(accountId, 'flipkart');
-                log.info(`Loaded ${cookies.length} Flipkart cookies from local disk`);
+                log.info(`Loaded ${cookies.length} Flipkart cookies from local disk (backend/data)`);
             } else {
                 log.info(`Loaded ${cookies.length} Flipkart cookies from cloud DB`);
             }
@@ -176,10 +196,25 @@ export async function openSession(options: SessionOptions) {
 
     // INJECT LOCAL STORAGE (New)
     try {
-        let lsData = await loadLocalStorage(accountId, platform);
-        if (!lsData) {
-            log.info(`[Session] Local Storage not found on disk, fetching from cloud...`);
+        let lsData = null;
+        if (getSupabase()) {
             lsData = await fetchLocalStorage(accountId, platform);
+        }
+
+        if (!lsData) {
+            lsData = await loadLocalStorage(accountId, platform);
+        }
+
+        // Shopsy Fallback: if no Shopsy LS, try Flipkart LS
+        if (!lsData && platform === 'shopsy') {
+            log.info(`No Shopsy Local Storage found for ${accountId}, attempting Flipkart LS fallback...`);
+            if (getSupabase()) {
+                lsData = await fetchLocalStorage(accountId, 'flipkart');
+            }
+            if (!lsData) {
+                lsData = await loadLocalStorage(accountId, 'flipkart');
+            }
+            if (lsData) log.info('Using Flipkart Local Storage for Shopsy session.');
         }
 
         if (lsData) {
@@ -191,6 +226,11 @@ export async function openSession(options: SessionOptions) {
                 if (hostname.includes('flipkart') || hostname.includes('shopsy')) {
                     console.log(`[ANTIGRAVITY-BROWSER] Creating localStorage entries: ${Object.keys(data).length}`);
                     for (const [key, value] of Object.entries(data)) {
+                        // Skip explicit logged-out state to allow cookies to rebuild it
+                        if (key === 'isLoggedIn' && value === 'false') {
+                            console.log('[ANTIGRAVITY-BROWSER] Skipping isLoggedIn: false from LS injection');
+                            continue;
+                        }
                         window.localStorage.setItem(key, value as string);
                     }
                 } else {
@@ -204,12 +244,49 @@ export async function openSession(options: SessionOptions) {
 
     // Navigate to platform
     const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+    // Diagnostic: Log requests to see if cookies are being sent
+    await page.route('**/*', async (route) => {
+        const request = route.request();
+        if (request.url().includes('flipkart.com') && request.isNavigationRequest()) {
+            const headers = await request.allHeaders();
+            const hasCookie = !!headers['cookie'];
+            console.log(`[DEBUG-ANTIGRAVITY] Navigation Request to: ${request.url()} | Has Cookie Header: ${hasCookie}`);
+        }
+        await route.continue();
+    });
+
+    page.on('console', msg => {
+        if (msg.type() === 'log' || msg.type() === 'debug') {
+            const text = msg.text();
+            if (text.includes('[ANTIGRAVITY-BROWSER]')) {
+                console.log(text);
+            }
+        }
+    });
+
+    const startUrl = platform === 'flipkart' ? 'https://www.flipkart.com/account' : 'https://www.shopsy.in/';
+    log.info(`Navigating to ${startUrl}...`);
+    await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
+
+    // Settle time
+    await page.waitForTimeout(2000);
+
+    // If we land on login page, try one refresh just in case cookies were slow to register
+    if (page.url().includes('/login')) {
+        log.info('[DEBUG-ANTIGRAVITY] Landed on login page. Attempting one refresh for cookie settlement...');
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(2000);
+    }
 
     log.info(`${platform} session opened. Browser will stay open for use.`);
 
     // VERIFY LOGIN STATE
-    const isLoggedIn = await Promise.race([
+    const cookiesAfter = await context.cookies();
+    const authNames = cookiesAfter.map(c => c.name).filter(n => ['at', 'S', 'SN', 'T'].includes(n));
+    log.info(`[DEBUG-ANTIGRAVITY] Context Auth Cookies after nav: ${authNames.join(', ')}`);
+
+    const finalLoggedIn = await Promise.race([
         page.waitForSelector('text=My Profile', { timeout: 3000 }).then(() => true).catch(() => false),
         page.waitForSelector('text=Logout', { timeout: 3000 }).then(() => true).catch(() => false),
         page.waitForSelector('text=Orders', { timeout: 3000 }).then(() => true).catch(() => false),
@@ -217,24 +294,62 @@ export async function openSession(options: SessionOptions) {
         new Promise(r => setTimeout(() => r(false), 3500))
     ]);
 
-    if (isLoggedIn) {
-        log.info('[DEBUG-ANTIGRAVITY] PAGE STATE: LOGGED IN (Selector matched)');
+    if (finalLoggedIn && !page.url().includes('/login')) {
+        log.info(`[DEBUG-ANTIGRAVITY] PAGE STATE: LOGGED IN (Selector matched and URL=${page.url()})`);
     } else {
-        log.info('[DEBUG-ANTIGRAVITY] PAGE STATE: LOGGED OUT (No text="My Profile" etc found)');
+        log.info(`[DEBUG-ANTIGRAVITY] PAGE STATE: LOGGED OUT (URL=${page.url()})`);
 
         // Check for Login button
         const loginBtn = await page.getByRole('link', { name: 'Login' }).first().isVisible().catch(() => false);
         log.info(`[DEBUG-ANTIGRAVITY] Login Button Visible: ${loginBtn}`);
     }
 
-    // PERIODIC LOCAL STORAGE SAVE (New)
-    // Save every 5 seconds to ensure we capture session tokens
+    // PERIODIC SAVE (LS & Cookies) - Optimized to only save when changed
+    let lastCookieHash = '';
+    let lastLsHash = '';
+
     const saveInterval = setInterval(async () => {
         try {
             if (page.isClosed()) return;
+            const url = page.url();
+
+            // 1. Save Local Storage - only if changed
             const ls = await page.evaluate(() => JSON.stringify(window.localStorage));
             if (ls && ls !== '{}') {
-                await saveLocalStorage(accountId, JSON.parse(ls), platform);
+                const lsHash = Buffer.from(ls).toString('base64').slice(0, 50); // Simple hash
+                if (lsHash !== lastLsHash) {
+                    lastLsHash = lsHash;
+                    await saveLocalStorage(accountId, JSON.parse(ls), 'flipkart');
+                    await pushLocalStorage(accountId, 'flipkart');
+                    log.info('Local Storage changed - synced to cloud.');
+                }
+            }
+
+            // 2. Save Cookies if we are likely logged in - only if changed
+            // Safety: Don't save if we are at a login page or if SN cookie says .LO
+            if (!url.includes('/login') && !url.includes('/logout')) {
+                const cookies = await context.cookies();
+                const snCookie = cookies.find(c => c.name === 'SN');
+
+                // Only save if we have a session cookie and it doesn't explicitly say LO
+                const isLO = snCookie?.value.endsWith('.LO') || false;
+
+                if (snCookie && !isLO) {
+                    // Create a simple hash of cookie values to detect changes
+                    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).sort().join('|');
+                    const cookieHash = Buffer.from(cookieStr).toString('base64').slice(0, 50);
+
+                    if (cookieHash !== lastCookieHash) {
+                        lastCookieHash = cookieHash;
+                        await extractAndSaveCookies(context, accountId, platform);
+                        try {
+                            await pushCookies(accountId, platform);
+                            log.info('Cookies changed - synced to cloud.');
+                        } catch (e: any) {
+                            log.warn(`Failed to push cookies to cloud: ${e.message}`);
+                        }
+                    }
+                }
             }
         } catch (e) {
             // Ignore errors (page might be closing)
@@ -244,33 +359,7 @@ export async function openSession(options: SessionOptions) {
     log.info(`${platform} session opened. Browser will stay open for use.`);
     context.on('close', async () => {
         clearInterval(saveInterval); // Stop polling
-        log.info('Session browser closed. Attempting to save cookies & local storage...');
-        try {
-            // Save cookies
-            await extractAndSaveCookies(context, accountId, platform);
-            await pushCookies(accountId, platform);
-
-            // Save Local Storage (New)
-            // We need to have kept a reference to the page, or we need to be careful.
-            // Actually, if context is closed, we can't get LS. 
-            // We need to capture LS *before* close or periodically.
-            // But since this event implies it's already closed/closing, we might miss it if we don't have an open page.
-            // The `close` event happens when the user closes the window. Playwright might still have access if it's the `browser` closing vs `context`. 
-            // PersistentContext 'close' means it's gone.
-
-            // BETTER STRATEGY: We can't get LS after close.
-            // We rely on the user manually triggering a "Save" or we just hope cookies are enough?
-            // NO, we need to save.
-
-            // Allow manual save via a specific call? Or maybe we can attach a listener to 'page' close?
-            // For now, let's just log that we saved cookies. 
-            // Realistically, to save LS, we need to poll or have a specific "Save Session" button in UI.
-            // OR we can try to get it if there are any pages left? No, close means 0 pages.
-
-            log.info('Cookies re-saved on session close.');
-        } catch (e: any) {
-            log.warn(`Could not re-save cookies: ${e.message}`);
-        }
+        log.info('Session browser closed.');
     });
 
     return { status: 'success', message: `${platform} session opened with saved cookies` };

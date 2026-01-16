@@ -79,14 +79,16 @@ export async function loginFlipkart(options: LoginOptions) {
     try {
         context = await chromium.launchPersistentContext(profilePath, {
             headless: headless,
-            viewport: fingerprint.viewport,
+            viewport: null, // Allow window resizing
             userAgent: fingerprint.userAgent,
             locale: fingerprint.locale,
             timezoneId: fingerprint.timezoneId,
             permissions: ['geolocation', 'notifications'],
             args: [
                 '--disable-blink-features=AutomationControlled',
-                '--no-sandbox'
+                '--no-sandbox',
+                '--window-size=1280,720',
+                '--window-position=50,50'
             ]
         });
     } catch (e: any) {
@@ -102,14 +104,16 @@ export async function loginFlipkart(options: LoginOptions) {
 
             context = await chromium.launchPersistentContext(profilePath, {
                 headless: headless,
-                viewport: fingerprint.viewport,
+                viewport: null, // Allow window resizing
                 userAgent: fingerprint.userAgent,
                 locale: fingerprint.locale,
                 timezoneId: fingerprint.timezoneId,
                 permissions: ['geolocation', 'notifications'],
                 args: [
                     '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox'
+                    '--no-sandbox',
+                    '--window-size=1280,720',
+                    '--window-position=50,50'
                 ]
             });
         } else {
@@ -250,13 +254,44 @@ export async function loginFlipkart(options: LoginOptions) {
             log.warn('Critical "S" cookie NOT detected after wait. Login might be partial.');
         }
 
+        // PERIODIC SAVE (LS & Cookies) - Added for manual login persistence
+        const saveInterval = setInterval(async () => {
+            try {
+                if (page.isClosed()) return;
+                const url = page.url();
+
+                // 1. Save Local Storage
+                const ls = await page.evaluate(() => JSON.stringify(window.localStorage));
+                if (ls && ls !== '{}') {
+                    await saveLocalStorage(accountId, JSON.parse(ls), 'flipkart');
+                    await pushLocalStorage(accountId, 'flipkart');
+                }
+
+                // 2. Save Cookies if we are likely logged in
+                if (!url.includes('/login') && !url.includes('/logout')) {
+                    const cookies = await context.cookies();
+                    const snCookie = cookies.find(c => c.name === 'SN');
+                    const isLO = snCookie?.value.endsWith('.LO') || false;
+
+                    if (snCookie && !isLO) {
+                        await extractAndSaveCookies(context, accountId, 'flipkart');
+                        await pushCookies(accountId, 'flipkart');
+                    }
+                }
+            } catch (e) {
+                // Ignore errors
+            }
+        }, 5000);
+
+        context.on('close', () => clearInterval(saveInterval));
+
         // SAVE LOCAL STORAGE (New)
         try {
             const ls = await page.evaluate(() => JSON.stringify(window.localStorage));
             if (ls && ls !== '{}') {
                 await saveLocalStorage(accountId, JSON.parse(ls), 'flipkart');
                 await pushLocalStorage(accountId, 'flipkart');
-                log.info('Local Storage captured and saved.');
+                log.info('Local Storage captured and synced to cloud.');
             }
         } catch (e: any) {
             log.warn(`Failed to save Local Storage: ${e.message}`);

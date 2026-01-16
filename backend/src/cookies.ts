@@ -34,7 +34,10 @@ export async function loadCookiesFromDisk(accountId: string, platform: 'flipkart
             // Fix sameSite value
             if (sanitized.sameSite === 'no_restriction') {
                 sanitized.sameSite = 'None';
-                sanitized.secure = true; // 'None' requires secure context
+                sanitized.secure = true;
+            } else if (sanitized.sameSite === 'None') {
+                // Keep None, ensure Secure is true
+                sanitized.secure = true;
             } else if (!sanitized.sameSite || !['Strict', 'Lax', 'None'].includes(sanitized.sameSite)) {
                 sanitized.sameSite = 'Lax'; // Default to Lax if invalid
             }
@@ -56,7 +59,7 @@ export async function saveCookiesToDisk(accountId: string, cookies: any[], platf
     const file = getCookieFilePath(accountId, platform);
     await fs.writeJSON(file, cookies, { spaces: 2 });
     // Attempt cloud sync
-    pushCookies(accountId, platform);
+    // pushCookies(accountId, platform); // DISABLED
 }
 
 /**
@@ -88,7 +91,7 @@ export async function extractAndSaveCookies(context: BrowserContext, accountId: 
     await fs.writeJSON(cookieFile, cookies, { spaces: 2 });
 
     // Attempt cloud sync
-    pushCookies(id, platform);
+    // pushCookies(id, platform); // DISABLED
 
     return cookies;
 }
@@ -114,9 +117,18 @@ export function adaptCookiesForShopsy(cookies: any[]) {
         const newCookie = { ...c };
         delete newCookie.hostOnly;
         delete newCookie.session;
+
+        // Convert flipkart domains to shopsy
         if (c.domain.includes('flipkart.com')) {
             newCookie.domain = '.shopsy.in';
         }
+
+        // Shopsy mobile web often requires Secure/None for session cookies to work across domains/subdomains
+        if (['at', 'S', 'SN', 'T'].includes(c.name)) {
+            newCookie.secure = true;
+            newCookie.sameSite = 'None';
+        }
+
         return newCookie;
     });
 }

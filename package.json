@@ -1,92 +1,82 @@
 {
-  "name": "flowdesk",
-  "version": "1.2.0",
-  "description": "FlowDesk - Multi-account session manager for Flipkart and Shopsy",
-  "main": "dist/electron/main.js",
+  "main": "electron/main.cjs",
+  "name": "tauri-appflowdesk",
+  "private": true,
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "tsx src/cli.ts",
-    "dev": "tsx src/cli.ts",
-    "lint": "eslint src/**/*.ts",
-    "app:dev": "concurrently \"npm run watch\" \"wait-on dist/electron/main.js && electron .\"",
-    "app:build": "npm run build && electron-builder",
-    "postinstall": "electron-builder install-app-deps",
-    "watch": "tsc -w"
+    "dev": "npm run electron:dev",
+    "build": "npm run electron:build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"electron .\"",
+    "electron:build": "npm run build:backend && npm run build:frontend && electron-builder",
+    "build:backend": "cd backend && npm install && npm run build && node install-browsers.cjs",
+    "build:backend:win": "cd backend && npm install && npm run build && cross-env BROWSER_PLATFORM=win32 node install-browsers.cjs",
+    "build:frontend": "tsc && vite build",
+    "postinstall": "electron-builder install-app-deps"
   },
   "build": {
-    "appId": "com.ogworks.flowdesk",
+    "appId": "com.flowdesk.app",
     "productName": "FlowDesk",
     "mac": {
-      "category": "public.app-category.productivity",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "artifactName": "${productName}-${version}-Mac.${ext}"
+      "category": "public.app-category.business"
     },
     "win": {
-      "target": "nsis",
-      "artifactName": "${productName}-${version}-Win.${ext}"
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     },
     "directories": {
-      "output": "release"
+      "output": "dist_electron"
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "YOUR_GITHUB_USERNAME",
-        "repo": "fs-automation-pro"
-      }
-    ],
     "files": [
       "dist/**/*",
-      "src/electron/ui/**/*",
+      "electron/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!src",
+          "!tsconfig.json",
+          "!*.ts",
+          "dist/**/*",
+          "node_modules/**/*",
+          "browsers/**/*",
+          "package.json",
+          ".env"
+        ]
+      }
     ]
   },
-  "keywords": [
-    "flipkart",
-    "shopsy",
-    "automation",
-    "playwright"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.89.0",
-    "adm-zip": "^0.5.10",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "electron-updater": "^6.7.3",
-    "fs-extra": "^11.2.0",
-    "imap-simple": "^5.1.0",
-    "inquirer": "^9.2.12",
-    "mailparser": "^3.9.1",
-    "playwright": "^1.40.0",
-    "winston": "^3.11.0"
+    "electron-is-dev": "^3.0.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "wait-on": "^9.0.3"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.5",
-    "@types/fs-extra": "^11.0.4",
-    "@types/imap-simple": "^4.2.10",
-    "@types/inquirer": "^9.0.9",
-    "@types/mailparser": "^3.4.6",
-    "@types/node": "^20.10.0",
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "autoprefixer": "^10.4.23",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^39.2.7",
-    "electron-builder": "^26.0.12",
-    "tsx": "^4.7.0",
-    "typescript": "^5.3.0",
-    "wait-on": "^9.0.3"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "electron-builder": "^26.4.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4"
   }
 }
