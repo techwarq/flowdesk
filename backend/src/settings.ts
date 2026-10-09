@@ -14,6 +14,11 @@ export interface AppSettings {
         url: string;
         key: string;
         enabled: boolean;
+    },
+    mongoConfig?: {
+        uri: string;
+        dbName: string;
+        enabled: boolean;
     }
 }
 

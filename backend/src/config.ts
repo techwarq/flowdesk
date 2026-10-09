@@ -1,13 +1,13 @@
 import path from 'path';
 import fs from 'fs-extra';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Base directories - Using process.cwd() to ensure data/ is always in the root
 export const PROJECT_ROOT = process.cwd();
-export const DATA_DIR = path.join(PROJECT_ROOT, 'data');
+// In production (Electron), write to AppData. In dev, write to local project 'data'
+const isProduction = process.env.NODE_ENV === 'production';
+export const DATA_DIR = process.env.USER_DATA_PATH
+  ? path.join(process.env.USER_DATA_PATH, 'data')
+  : (isProduction ? path.join(process.cwd(), 'data') : path.join(PROJECT_ROOT, 'data'));
 export const PROFILES_DIR = path.join(DATA_DIR, 'profiles');
 export const ENCRYPTED_DIR = path.join(DATA_DIR, 'encrypted');
 export const LOGS_DIR = path.join(DATA_DIR, 'logs');

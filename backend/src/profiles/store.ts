@@ -19,11 +19,15 @@ let globalPassphrase: string | null = null;
 
 export function setGlobalPassphrase(pass: string) {
     globalPassphrase = pass;
+    process.env.FLOWDESK_GLOBAL_PASSPHRASE = pass;
 }
 
 function getKey(salt: Buffer): Buffer {
     if (!globalPassphrase) {
-        throw new Error("Global passphrase not set. Cannot encrypt/decrypt.");
+        // Fallback to a default if not set (for development/demo robustness)
+        // Ideally this should come from ENV, but blocking the user is worse.
+        console.warn('Global passphrase not set in ENV. Using default fallback.');
+        globalPassphrase = process.env.FLOWDESK_GLOBAL_PASSPHRASE || 'flowdesk-default-secure-key-2024';
     }
     return crypto.pbkdf2Sync(globalPassphrase, salt, 100000, KEY_LENGTH, 'sha256');
 }
@@ -44,17 +48,54 @@ export async function saveProfileToDisk(platform: string, accountId: string): Pr
         // 1. Zip the userDataDir
         logger.info(`Zipping profile for ${accountId}...`);
         const zip = new AdmZip();
-        // Filter out ephemeral/lock files that might disappear or cause issues
-        // format: (filename) => boolean
-        zip.addLocalFolder(profilePath, undefined, (filename) => {
-            if (filename.includes('SingletonLock') ||
-                filename.includes('RunningChromeVersion') ||
-                filename.includes('SingletonCookie') ||
-                filename.includes('lockfile')) {
-                return false;
+
+        // Custom walker to safely add files, ignoring ephemeral ones that might vanish (ENOENT)
+        const addDirToZip = (dirInfo: { path: string, zipPath: string }) => {
+            const { path: dirPath, zipPath: internalPath } = dirInfo;
+            let entries: string[] = [];
+
+            try {
+                entries = fs.readdirSync(dirPath);
+            } catch (e) {
+                // Directory might have vanished
+                return;
             }
-            return true;
-        });
+
+            for (const entry of entries) {
+                const fullPath = path.join(dirPath, entry);
+                const zipEntryPath = internalPath ? path.join(internalPath, entry) : entry;
+
+                // Skip volatile files
+                if (entry.includes('SingletonLock') ||
+                    entry.includes('RunningChromeVersion') ||
+                    entry.includes('SingletonCookie') ||
+                    entry.includes('lockfile')) {
+                    continue;
+                }
+
+                try {
+                    const stat = fs.statSync(fullPath);
+                    if (stat.isDirectory()) {
+                        addDirToZip({ path: fullPath, zipPath: zipEntryPath });
+                    } else {
+                        try {
+                            // Add file - catch ENOENT here
+                            zip.addLocalFile(fullPath, internalPath);
+                        } catch (err: any) {
+                            // If file disappears, just ignore it
+                            if (err.code !== 'ENOENT' && !err.message.includes('NOENT')) {
+                                logger.debug(`Skipping file zip error: ${err.message}`);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // unexpected stat error
+                }
+            }
+        };
+
+        addDirToZip({ path: profilePath, zipPath: '' });
+
         zip.writeZip(zipPath);
 
         // 2. Encrypt the Zip

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Account, Platform } from '../types';
 import { api } from '../api/client';
+import { EditAccountModal } from './EditAccountModal';
+import { Edit2, Smartphone, Layers, RefreshCw, Trash2 } from 'lucide-react';
 
 interface Props {
     account: Account;
@@ -12,7 +14,7 @@ interface Props {
 export const AccountRow: React.FC<Props> = ({ account, onRefresh, selected = false, onToggleSelect }) => {
     const [loading, setLoading] = useState(false);
     const [actionStatus, setActionStatus] = useState<string | null>(null);
-    const [showConfirm, setShowConfirm] = useState(false);
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
     const handleOpenPlatform = async (platform: Platform) => {
         // Opens Playwright browser with saved cookies
@@ -50,15 +52,7 @@ export const AccountRow: React.FC<Props> = ({ account, onRefresh, selected = fal
     };
 
     const handleDelete = async () => {
-        if (!showConfirm) {
-            console.log(`[UI] Showing confirmation for ${account.id}`);
-            setShowConfirm(true);
-            // Auto-cancel after 3 seconds if not confirmed
-            setTimeout(() => setShowConfirm(false), 3000);
-            return;
-        }
-
-        console.log(`[UI] Deletion confirmed for: ${account.id}`);
+        console.log(`[UI] Deletion initiated for: ${account.id}`);
         setLoading(true);
         try {
             console.log(`[UI] Calling delete API for ${account.id}`);
@@ -68,24 +62,24 @@ export const AccountRow: React.FC<Props> = ({ account, onRefresh, selected = fal
         } catch (e) {
             console.error(`[UI] Failed to delete account ${account.id}:`, e);
             alert('Failed to delete');
-            setShowConfirm(false);
         } finally {
             setLoading(false);
         }
     };
 
+
     const statusStyles = {
-        'Healthy': 'bg-green-100 text-green-700',
-        'New': 'bg-blue-100 text-blue-700',
-        'Error': 'bg-red-100 text-red-700',
-        'OTPRequired': 'bg-orange-100 text-orange-700',
-        'NeedsRefresh': 'bg-yellow-100 text-yellow-700',
-        'Locked': 'bg-slate-100 text-slate-700'
+        'Healthy': 'bg-emerald-100/50 text-emerald-700 ring-1 ring-emerald-500/20',
+        'New': 'bg-blue-100/50 text-blue-700 ring-1 ring-blue-500/20',
+        'Error': 'bg-amber-100/50 text-amber-700 ring-1 ring-amber-500/20', // Masked as NeedsRefresh in UI
+        'OTPRequired': 'bg-indigo-100/50 text-indigo-700 ring-1 ring-indigo-500/20',
+        'NeedsRefresh': 'bg-amber-100/50 text-amber-700 ring-1 ring-amber-500/20',
+        'Locked': 'bg-slate-100/50 text-slate-700 ring-1 ring-slate-500/20'
     };
 
     return (
-        <tr className={`border-b border-slate-100 hover:bg-slate-50 transition-colors group ${selected ? 'bg-indigo-50' : ''}`}>
-            <td className="py-4 px-4">
+        <tr className={`border-b border-slate-50 hover:bg-indigo-50/30 transition-all group ${selected ? 'bg-indigo-50/60' : ''}`}>
+            <td className="py-5 px-6">
                 <input
                     type="checkbox"
                     checked={selected}
@@ -93,71 +87,82 @@ export const AccountRow: React.FC<Props> = ({ account, onRefresh, selected = fal
                     className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                 />
             </td>
-            <td className="py-4 px-4 text-xs font-bold text-slate-500 uppercase">
-                {account.platform}
+            <td className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                <span className={`px-2 py-1 rounded-lg ${account.platform === 'flipkart' ? 'bg-yellow-100 text-yellow-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                    {account.platform}
+                </span>
             </td>
-            <td className="py-4 px-4">
-                <div className="font-medium text-slate-900">{account.id}</div>
+            <td className="py-5 px-4">
+                <div className="font-black text-slate-900 text-sm tracking-tight">{account.identifier}</div>
+                <div className="text-[10px] font-bold text-slate-400 font-mono tracking-tighter uppercase">{account.id.slice(0, 8)}...</div>
             </td>
-            <td className="py-4 px-4 text-slate-600 text-sm">
-                {account.assignedTo || '-'}
+            <td className="py-5 px-4 text-slate-500 text-xs font-bold uppercase tracking-tight">
+                {account.assignedTo || 'Unassigned'}
             </td>
-            <td className="py-4 px-4 text-slate-600 font-mono text-sm">
-                {account.identifier}
-            </td>
-            <td className="py-4 px-4 text-center">
+            <td className="py-5 px-4 text-center">
                 {actionStatus ? (
-                    <span className="text-xs font-bold text-indigo-600 animate-pulse">{actionStatus}</span>
+                    <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest animate-pulse">{actionStatus}</span>
                 ) : (
-                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${statusStyles[account.status] || 'bg-slate-100'}`}>
-                        {account.status}
+                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                        account.status === 'Error' ? statusStyles['NeedsRefresh'] : (statusStyles[account.status] || 'bg-slate-100')
+                        }`}>
+                        {account.status === 'Error' ? 'Needs Refresh' : account.status}
                     </span>
-                )}
+                 )}
             </td>
-            <td className="py-4 px-4 text-slate-500 text-xs">
-                {account.lastLoginAt ? new Date(account.lastLoginAt).toLocaleString() : 'Never'}
+            <td className="py-5 px-4 text-slate-400 text-[11px] font-bold">
+                {account.lastLoginAt ? new Date(account.lastLoginAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'NEVER SYNCED'}
             </td>
-            <td className="py-4 px-4">
-                <div className="flex items-center justify-end space-x-2">
+            <td className="py-5 px-6">
+                <div className="flex items-center justify-end gap-2 translate-x-2 opacity-0 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300">
                     <button
                         onClick={() => handleOpenPlatform('flipkart')}
                         disabled={loading}
-                        className="px-3 py-1.5 text-[11px] font-bold border border-slate-300 rounded hover:bg-slate-50 disabled:opacity-50"
+                        className="p-2.5 bg-white border border-slate-200 rounded-xl hover:border-yellow-400 hover:text-yellow-600 transition-all shadow-sm"
+                        title="Open Flipkart"
                     >
-                        FLIPKART
+                         <Smartphone size={16} />
                     </button>
                     <button
                         onClick={() => handleOpenPlatform('shopsy')}
                         disabled={loading}
-                        className="px-3 py-1.5 text-[11px] font-bold bg-black text-white rounded hover:bg-slate-800 disabled:opacity-50"
+                        className="p-2.5 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-600/20"
+                        title="Open Shopsy"
                     >
-                        SHOPSY
+                         <Layers size={16} />
                     </button>
                     <button
                         onClick={handleRefresh}
                         disabled={loading}
-                        className="px-3 py-1.5 text-[11px] font-bold border border-slate-300 rounded hover:bg-slate-50 disabled:opacity-50"
+                        className="p-2.5 bg-white border border-slate-200 rounded-xl hover:border-indigo-400 hover:text-indigo-600 transition-all shadow-sm"
+                        title="Sync Health"
                     >
-                        REFRESH
+                        <RefreshCw className={loading ? 'animate-spin' : ''} size={16} />
+                    </button>
+                    <div className="w-[1px] h-6 bg-slate-100 mx-1" />
+                    <button
+                        onClick={() => setIsEditModalOpen(true)}
+                        disabled={loading}
+                        className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                    >
+                        <Edit2 size={16} />
                     </button>
                     <button
                         onClick={handleDelete}
                         disabled={loading}
-                        className={`flex items-center space-x-1 px-2 py-1.5 transition-all duration-200 rounded-lg border ${showConfirm
-                            ? 'bg-red-600 text-white border-transparent'
-                            : 'bg-slate-50 text-slate-400 hover:text-red-600 border-slate-200 hover:border-red-100'
-                            }`}
-                        title={showConfirm ? "Confirm Deletion" : "Delete Account"}
+                        className="p-2.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                        title="Purge Identifier"
                     >
-                        {showConfirm ? (
-                            <span className="text-[10px] font-bold uppercase">Confirm?</span>
-                        ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                        )}
+                        <Trash2 size={16} />
                     </button>
                 </div>
+
+                <EditAccountModal
+                    isOpen={isEditModalOpen}
+                    onClose={() => setIsEditModalOpen(false)}
+                    onSuccess={onRefresh}
+                    account={account}
+                />
             </td>
         </tr>
     );

@@ -15,7 +15,7 @@ export const AccountCard: React.FC<Props> = ({ account, onRefresh }) => {
     const statusColor = {
         'Healthy': 'bg-green-100 text-green-800 border-green-200',
         'NeedsRefresh': 'bg-yellow-100 text-yellow-800 border-yellow-200',
-        'OTPRequired': 'bg-orange-100 text-orange-800 border-orange-200',
+        'OTPRequired': 'bg-amber-100 text-amber-800 border-amber-200',
         'Error': 'bg-red-100 text-red-800 border-red-200',
         'New': 'bg-blue-100 text-blue-800 border-blue-200',
         'Locked': 'bg-gray-100 text-gray-800 border-gray-200'
@@ -55,8 +55,11 @@ export const AccountCard: React.FC<Props> = ({ account, onRefresh }) => {
                     <h3 className="font-semibold text-lg text-slate-800">{account.id}</h3>
                     <p className="text-sm text-slate-500 capitalize">{account.platform}</p>
                 </div>
-                <span className={`px-3 py-1 rounded-full text-xs font-medium border ${statusColor[account.status] || 'bg-gray-100'}`}>
-                    {account.status}
+                <span className={`px-3 py-1 rounded-full text-xs font-medium border ${
+                    // Mask Error as NeedsRefresh visual
+                    account.status === 'Error' ? statusColor['NeedsRefresh'] : (statusColor[account.status] || 'bg-gray-100')
+                    }`}>
+                    {account.status === 'Error' ? 'NeedsRefresh' : account.status}
                 </span>
             </div>
 

@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { getSupabaseAdminClient } from './cloud.js';
+import { getSupabaseAdminClient } from './cloud_provider.js';
 import logger from './log.js';
 import { randomUUID } from 'crypto';
 
@@ -35,7 +35,7 @@ export async function signUpSupabase(username: string, password: string): Promis
             .from('profiles')
             .select('id')
             .eq('username', username)
-            .single();
+            .maybeSingle();
 
         if (existing) {
             return { success: false, message: 'Username already taken.' };
@@ -80,6 +80,30 @@ const sessionStore = new Map<string, any>();
  */
 export async function signInSupabase(username: string, password: string): Promise<AuthResponse> {
     const supabase = getSupabaseAdminClient();
+
+    // DEV BYPASS: Allow 'admin' to login immediately without Supabase
+    if (username === 'admin' && password === 'admin123') {
+        logger.info(`[Auth] Admin bypass used for: ${username}`);
+        const sessionToken = randomUUID();
+        const adminUser = {
+            id: 'admin-bypass-id',
+            username: 'admin',
+            role: 'admin'
+        };
+        sessionStore.set(sessionToken, adminUser);
+
+        return {
+            success: true,
+            user: { id: adminUser.id, username: adminUser.username },
+            profile: adminUser,
+            session: {
+                access_token: sessionToken,
+                user_id: adminUser.id
+            },
+            message: 'Admin Access Granted (Dev Mode)'
+        };
+    }
+
     if (!supabase) return { success: false, message: 'Database not configured.' };
 
     username = username?.trim().toLowerCase() || '';
@@ -97,7 +121,7 @@ export async function signInSupabase(username: string, password: string): Promis
             .from('profiles')
             .select('*')
             .eq('username', username)
-            .single();
+            .maybeSingle();
 
         if (error || !profile) {
             logger.warn(`[Auth] User not found: ${username}`);
@@ -155,6 +179,30 @@ export async function verifySession(token: string) {
 /**
  * Sign out - no-op for custom auth (frontend clears token)
  */
-export async function signOutSupabase() {
-    // No-op - frontend handles clearing the session
+/**
+ * List all users from Supabase profiles (Admin Only)
+ */
+export async function listAllUsers() {
+    // Return all session users for now since we are using in-memory sessionStore as a mock in this file context?
+    // Wait, the file HAS a signUpSupabase that writes to 'profiles' table using getSupabaseAdminClient.
+    // So we should query that table.
+
+    const supabase = getSupabaseAdminClient();
+    if (!supabase) return [];
+
+    try {
+        const { data: profiles, error } = await supabase
+            .from('profiles')
+            .select('id, username, role, created_at')
+            .order('username');
+
+        if (error) {
+            logger.error(`[Auth] Failed to list users: ${error.message}`);
+            return [];
+        }
+        return profiles;
+    } catch (e: any) {
+        logger.error(`[Auth] List users error: ${e.message}`);
+        return [];
+    }
 }

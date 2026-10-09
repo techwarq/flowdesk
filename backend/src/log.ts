@@ -65,8 +65,19 @@ async function readLogFile(filename: string, limit: number = 50) {
     }
 }
 
+import { DATA_DIR } from './config.js';
+
 export async function getActivityLogs(limit: number = 50) {
-    return readLogFile('combined.log', limit);
+    const localPath = path.join(DATA_DIR, 'activity.json');
+    try {
+        if (await fs.pathExists(localPath)) {
+            const logs = await fs.readJSON(localPath);
+            return logs.slice(0, limit);
+        }
+    } catch (e) {
+        console.error('Failed to read activity logs:', e);
+    }
+    return [];
 }
 
 export async function getAppErrors(limit: number = 50) {

@@ -2,7 +2,7 @@ import { loginFlipkart } from '../login/flipkart.js';
 import { loginShopsy } from '../login/shopsy.js';
 import logger from '../log.js';
 
-export async function refreshSession(platform: 'flipkart' | 'shopsy', accountId: string, identifier: string) {
+export async function refreshSession(platform: string, accountId: string, identifier: string) {
     logger.info(`Attempting refresh for ${platform} - ${accountId}`);
 
     // For MVP, "refresh" is essentially trying to open the browser again.
@@ -12,7 +12,10 @@ export async function refreshSession(platform: 'flipkart' | 'shopsy', accountId:
 
     if (platform === 'flipkart') {
         return loginFlipkart({ accountId, identifier, headless: false });
-    } else {
+    } else if (platform === 'shopsy') {
         return loginShopsy({ accountId, identifier, headless: false });
+    } else {
+        const { openSession } = await import('../session.js');
+        return openSession({ accountId, platform });
     }
 }

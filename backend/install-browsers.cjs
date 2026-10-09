@@ -1,97 +1,119 @@
 const { execSync } = require('child_process');
 const path = require('path');
-const fs = require('fs');
-const https = require('https');
-const { pipeline } = require('stream');
+const fs = require('fs-extra');
 
 const browsersPath = path.resolve(__dirname, 'browsers');
-const targetPlatform = process.env.BROWSER_PLATFORM || process.platform;
 
 // Ensure directory exists
 if (!fs.existsSync(browsersPath)) {
     fs.mkdirSync(browsersPath, { recursive: true });
 }
 
-console.log(`Preparing browsers for platform: ${targetPlatform} in ${browsersPath}`);
+console.log(`Installing Playwright browsers to: ${browsersPath}`);
 
-async function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const request = https.get(url, (response) => {
-            // Handle redirects
-            if (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307) {
-                console.log(`Redirecting to: ${response.headers.location}`);
-                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
+try {
+    // Set the environment variable to force installation to our local directory
+    process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
 
-            if (response.statusCode !== 200) {
-                reject(new Error(`Failed to download: ${response.statusCode}`));
-                return;
-            }
+    // Support cross-platform builds (e.g., building Windows exe from macOS)
+    const targetPlatform = process.env.BROWSER_PLATFORM || process.platform;
+    console.log(`Target platform: ${targetPlatform}`);
 
-            const file = fs.createWriteStream(dest);
-            pipeline(response, file, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+    // === CRITICAL FIX for Cross-Platform Build (Mac -> Windows) ===
+    // If we are defining BROWSER_PLATFORM='win32' but running on Mac/Linux,
+    // 'npx playwright install' gave us the Mac/Linux binary despite the override.
+    // We must manually swap it for the Windows binary using the direct URL.
+    if (targetPlatform === 'win32' && process.platform !== 'win32') {
+        console.log('Detected Cross-Platform Build: Manually downloading Windows Chromium...');
 
-        request.on('error', reject);
-    });
-}
+        // Hardcoded URL for Chrome 145.0.7632.6 (Playwright 1.57.0 / Chromium 1208)
+        // See: https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip
+        const winChromeUrl = 'https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip';
+        const browserDir = path.join(browsersPath, 'chromium-1208'); // Ensure this matches the extracted folder name structure if possible, or we rename it
+        // Actually, Playwright expects chromium-<revision>, so 1208 is likely correct for the folder name in older schemes, 
+        // OR checks the version. 
+        // The previous log showed "chromium-1208" was the directory created by Playwright on Mac.
 
-async function installWindowsBrowsers() {
-    // Hardcoded for Playwright 1.57.0 (Chromium Build 1200)
-    const revision = '1200';
-    const url = `https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${revision}/chromium-win64.zip`;
-    const zipPath = path.join(browsersPath, 'chromium-win64.zip');
+        // We will create 'chromium-1208' if it doesn't exist, or empty it.
+        // Wait, the zip might contain a 'chrome-win64' folder at the root.
 
-    console.log(`Downloading Windows Chromium (Build ${revision}) from ${url}...`);
-    await downloadFile(url, zipPath);
-
-    console.log('Download complete. Extracting...');
-    const AdmZip = require('adm-zip');
-    const zip = new AdmZip(zipPath);
-    zip.extractAllTo(browsersPath, true);
-
-    // Cleanup
-    fs.unlinkSync(zipPath);
-
-    // Check extraction result
-    const extractPath = path.join(browsersPath, 'chrome-win');
-    const targetPath = path.join(browsersPath, `chromium-${revision}`);
-
-    if (fs.existsSync(extractPath)) {
-        if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { recursive: true });
-        // Rename with retry to avoid lock issues
         try {
-            fs.renameSync(extractPath, targetPath);
-        } catch (e) {
-            // Wait and retry
-            console.log('Rename failed, retrying in 1s...');
-            await new Promise(r => setTimeout(r, 1000));
-            fs.renameSync(extractPath, targetPath);
-        }
-        console.log(`Renamed ${extractPath} to ${targetPath}`);
-    }
-    console.log('Windows browser installed.');
-}
+            console.log('Cleaning up existing Mac binaries...');
+            // Check if chromium-1208 exists from the mac install we just did (or previous runs)
+            const existingDir = fs.readdirSync(browsersPath).find(d => d.startsWith('chromium-'));
+            const targetDirName = existingDir || 'chromium-1208';
+            const targetDir = path.join(browsersPath, targetDirName);
 
-if (targetPlatform === 'win32') {
-    installWindowsBrowsers().catch(err => {
-        console.error('Failed to install Windows browsers:', err);
-        process.exit(1);
-    });
-} else {
-    try {
-        process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
-        console.log('Running standard Playwright install for current OS...');
-        execSync('npx playwright install chromium', {
+            fs.emptyDirSync(targetDir);
+
+            const zipPath = path.join(targetDir, 'chromium-win64.zip');
+
+            console.log(`Downloading Windows Chromium from ${winChromeUrl}...`);
+            execSync(`curl -L -o "${zipPath}" "${winChromeUrl}"`, { stdio: 'inherit' });
+
+            console.log('Extracting Windows binaries...');
+            // Unzip
+            try {
+                // Try unzip command first as it's cleaner on Mac
+                execSync(`unzip -o "${zipPath}" -d "${targetDir}"`, { stdio: 'inherit' });
+            } catch (e) {
+                console.log('unzip command failed, trying adm-zip...');
+                const zip = new AdmZip(zipPath);
+                zip.extractAllTo(targetDir, true);
+            }
+
+            // Cleanup zip
+            fs.unlinkSync(zipPath);
+
+            // Re-create Playwright marker files that were deleted by emptyDirSync
+            fs.writeFileSync(path.join(targetDir, 'INSTALLATION_COMPLETE'), '');
+            console.log('✅ Successfully replaced Mac Chromium with Windows Chromium and restored markers.');
+
+            // Also need ffmpeg?
+            // For now, let's just get Chrome working. 
+
+        } catch (e) {
+            console.error('Failed to manually download Windows Chromium:', e);
+            throw e;
+        }
+    } else {
+        // Standard install for current platform (or if already on Windows)
+        console.log('Running Playwright install for chromium...');
+        // We only need chromium for this app
+        const installCmd = targetPlatform === 'win32'
+            ? 'npx playwright install chromium --with-deps'
+            : 'npx playwright install chromium';
+
+        execSync(installCmd, {
             stdio: 'inherit',
-            env: process.env
+            env: process.env,
+            cwd: __dirname
         });
-    } catch (error) {
-        console.error('Install failed:', error);
-        process.exit(1);
     }
+
+    // Antigravity Fix: Delete setup.exe if it exists
+    try {
+        const chromiumDir = fs.readdirSync(browsersPath).find(d => d.startsWith('chromium-'));
+        if (chromiumDir) {
+            // Check both possible locations
+            const setupPaths = [
+                path.join(browsersPath, chromiumDir, 'chrome-win64', 'setup.exe'),
+                path.join(browsersPath, chromiumDir, 'chrome-win', 'setup.exe')
+            ];
+
+            for (const setupPath of setupPaths) {
+                if (fs.existsSync(setupPath)) {
+                    console.log(`Removing ${setupPath} to prevent build conflicts...`);
+                    fs.unlinkSync(setupPath);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to cleanup setup.exe:', e);
+    }
+
+    console.log('Browser installation complete.');
+} catch (error) {
+    console.error('Failed to install browsers:', error);
+    process.exit(1);
 }

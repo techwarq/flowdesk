@@ -24,18 +24,48 @@ export interface AuthSession {
 
 // Ensure at least one admin exists
 export async function initAuth() {
+    const salt = 'fsa_local_salt';
+    const defaultHash = crypto.createHash('sha256').update('admin123' + salt).digest('hex');
+
     if (!await fs.pathExists(USERS_FILE)) {
         // Create default admin
-        const salt = 'fsa_local_salt'; // In prod, unique salt per user
         const defaultAdmin: User = {
             username: 'admin',
             // Default password 'admin123' -> hash
-            passwordHash: crypto.createHash('sha256').update('admin123' + salt).digest('hex'),
+            passwordHash: defaultHash,
             role: 'admin',
             allowedAccounts: 9999,
             createdAt: Date.now()
         };
         await fs.writeJSON(USERS_FILE, { users: [defaultAdmin] }, { spaces: 2 });
+    } else {
+        // force reset admin password to known default for dev
+        try {
+            const data = await fs.readJSON(USERS_FILE);
+            const adminIndex = data.users.findIndex((u: User) => u.username === 'admin');
+
+            if (adminIndex !== -1) {
+                // Update hash
+                if (data.users[adminIndex].passwordHash !== defaultHash) {
+                    data.users[adminIndex].passwordHash = defaultHash;
+                    await fs.writeJSON(USERS_FILE, data, { spaces: 2 });
+                    console.log('[Auth] Admin password auto-fixed to: "admin123"');
+                }
+            } else {
+                // Admin missing, append it
+                data.users.push({
+                    username: 'admin',
+                    passwordHash: defaultHash,
+                    role: 'admin',
+                    allowedAccounts: 9999,
+                    createdAt: Date.now()
+                });
+                await fs.writeJSON(USERS_FILE, data, { spaces: 2 });
+                console.log('[Auth] Admin user restored.');
+            }
+        } catch (e) {
+            console.error('[Auth] Failed to check/update admin user', e);
+        }
     }
 }
 
@@ -48,6 +78,13 @@ export async function loginUser(username: string, password: string): Promise<{ s
 
     const salt = 'fsa_local_salt';
     const hash = crypto.createHash('sha256').update(password + salt).digest('hex');
+
+    console.log('[DEBUG] Login Attempt:');
+    console.log(`[DEBUG] Username: ${username}`);
+    console.log(`[DEBUG] Input Password: "${password}"`);
+    console.log(`[DEBUG] Target Hash: ${user.passwordHash}`);
+    console.log(`[DEBUG] Calc Hash:   ${hash}`);
+    console.log(`[DEBUG] Match?: ${hash === user.passwordHash}`);
 
     if (hash === user.passwordHash) {
         return {

@@ -1,17 +1,20 @@
 {
   "main": "electron/main.cjs",
   "name": "tauri-appflowdesk",
+  "productName": "FlowDesk",
+  "description": "ASTRA - High Performance E-commerce Operations",
   "private": true,
   "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "npm run electron:dev",
     "build": "npm run electron:build",
+    "build:win": "npm run build:backend:win && npm run build:frontend && electron-builder --win",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"electron .\"",
     "electron:build": "npm run build:backend && npm run build:frontend && electron-builder",
-    "build:backend": "cd backend && npm install && npm run build && node install-browsers.cjs",
-    "build:backend:win": "cd backend && npm install && npm run build && cross-env BROWSER_PLATFORM=win32 node install-browsers.cjs",
+    "build:backend": "cd backend && npm install --legacy-peer-deps && npm run build:bundle && node install-browsers.cjs && npm prune --production && rm -rf node_modules/bufferutil node_modules/utf-8-validate",
+    "build:backend:win": "cd backend && npm install --legacy-peer-deps && npm run build:bundle && cross-env BROWSER_PLATFORM=win32 node install-browsers.cjs && npm prune --production && rm -rf node_modules/bufferutil node_modules/utf-8-validate",
     "build:frontend": "tsc && vite build",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -19,18 +22,41 @@
     "appId": "com.flowdesk.app",
     "productName": "FlowDesk",
     "mac": {
-      "category": "public.app-category.business"
+      "category": "public.app-category.business",
+      "target": [
+        "dmg"
+      ]
     },
     "win": {
       "target": [
-        "nsis",
-        "portable"
-      ]
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "publish": null
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": false,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
     },
     "directories": {
       "output": "dist_electron"
@@ -40,26 +66,36 @@
       "electron/**/*",
       "package.json"
     ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
     "extraResources": [
       {
         "from": "backend",
         "to": "backend",
         "filter": [
-          "**/*",
-          "!src",
-          "!tsconfig.json",
-          "!*.ts",
-          "dist/**/*",
-          "node_modules/**/*",
-          "browsers/**/*",
+          "dist/**",
           "package.json",
-          ".env"
+          ".env",
+          "browsers/**",
+          "data/**",
+          "!data/profiles/**",
+          "!data/logs/**",
+          "!data/cookies/**"
         ]
+      },
+      {
+        "from": "backend/node_modules",
+        "to": "backend/node_modules"
       }
     ]
   },
   "dependencies": {
+    "@types/cron": "^2.0.1",
+    "cron": "^4.4.0",
     "electron-is-dev": "^3.0.1",
+    "lucide-react": "^0.562.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "wait-on": "^9.0.3"
@@ -72,7 +108,7 @@
     "autoprefixer": "^10.4.23",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^39.2.7",
+    "electron": "^38.8.0",
     "electron-builder": "^26.4.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",

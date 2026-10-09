@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Account } from '../types';
 import { AccountRow } from './AccountRow';
 import { api } from '../api/client';
+import { Share, Trash2, RefreshCw, Smartphone } from 'lucide-react';
 
 interface Props {
     accounts: Account[];
@@ -11,6 +12,13 @@ interface Props {
 export const AccountTable: React.FC<Props> = ({ accounts, onRefresh }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [deleting, setDeleting] = useState(false);
+    const [transferring, setTransferring] = useState(false);
+    const [targetUser, setTargetUser] = useState('');
+    const [users, setUsers] = useState<any[]>([]);
+
+    React.useEffect(() => {
+        api.getAdminProfiles().then(setUsers).catch(console.error);
+    }, []);
 
     const toggleSelect = (id: string) => {
         setSelectedIds(prev => {
@@ -39,63 +47,94 @@ export const AccountTable: React.FC<Props> = ({ accounts, onRefresh }) => {
 
         setDeleting(true);
         try {
-            const idsToDelete = Array.from(selectedIds);
-            console.log('[UI] Deleting accounts:', idsToDelete);
-
-            for (const id of idsToDelete) {
-                console.log('[UI] Deleting:', id);
+            for (const id of Array.from(selectedIds)) {
                 await api.deleteAccount(id);
             }
-
-            console.log('[UI] All deletions complete');
             setSelectedIds(new Set());
             onRefresh();
         } catch (e) {
             console.error('Bulk delete error:', e);
-            alert('Some deletions may have failed');
         } finally {
             setDeleting(false);
         }
     };
 
+    const handleBulkTransfer = async () => {
+        if (selectedIds.size === 0 || !targetUser) return;
+        
+        setTransferring(true);
+        try {
+            const ids = Array.from(selectedIds);
+            const res = await api.moveAccounts(ids, targetUser);
+            if (res.success) {
+                alert(`Successfully moved ${res.count} accounts.`);
+                setSelectedIds(new Set());
+                onRefresh();
+            } else {
+                alert(`Transfer failed: ${res.message}`);
+            }
+        } catch (e) {
+            console.error('Bulk transfer error:', e);
+            alert('Transfer failed');
+        } finally {
+            setTransferring(false);
+        }
+    };
+
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden animate-in fade-in duration-500 h-full flex flex-col">
             {/* Bulk Actions Bar */}
             {selectedIds.size > 0 && (
-                <div className="bg-indigo-50 border-b border-indigo-200 px-4 py-3 flex items-center justify-between">
-                    <span className="text-sm font-medium text-indigo-700">
-                        {selectedIds.size} account(s) selected
-                    </span>
-                    <button
-                        onClick={handleBulkDelete}
-                        disabled={deleting}
-                        className="px-4 py-2 bg-red-600 text-white text-sm font-bold rounded-lg hover:bg-red-700 disabled:opacity-50 flex items-center space-x-2"
-                    >
-                        {deleting ? (
-                            <>
-                                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                <span>Deleting...</span>
-                            </>
-                        ) : (
-                            <>
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                                <span>Delete Selected</span>
-                            </>
-                        )}
-                    </button>
+                <div className="bg-slate-900 px-6 py-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <span className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
+                        <span className="text-sm font-black text-white uppercase tracking-wider">
+                            {selectedIds.size} Identifiers Selected
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                        <div className="flex items-center bg-white/10 rounded-2xl overflow-hidden h-12 p-1 border border-white/10">
+                            <select
+                                value={targetUser}
+                                onChange={(e) => setTargetUser(e.target.value)}
+                                className="px-4 py-1 text-xs bg-transparent outline-none border-none text-white font-bold min-w-[180px] appearance-none"
+                            >
+                                <option value="" className="text-slate-900">Choose Receiver...</option>
+                                {users.map((u, i) => (
+                                    <option key={i} value={u.id || u.username} className="text-slate-900">{u.username}</option>
+                                ))}
+                            </select>
+                            <button
+                                onClick={handleBulkTransfer}
+                                disabled={transferring || !targetUser}
+                                className="px-6 h-full bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-30 transition-all flex items-center gap-2 rounded-xl"
+                            >
+                                {transferring ? <RefreshCw className="animate-spin" size={12} /> : <Share size={12} />}
+                                DEPLOY TRANSFER
+                            </button>
+                        </div>
+                        <div className="w-[1px] h-6 bg-white/10 mx-1" />
+                        <button
+                            onClick={handleBulkDelete}
+                            disabled={deleting}
+                            className="w-12 h-12 flex items-center justify-center bg-red-500/10 text-red-400 rounded-2xl hover:bg-red-500 hover:text-white disabled:opacity-30 transition-all border border-red-500/20"
+                            title="Purge Selected"
+                        >
+                            {deleting ? (
+                                <RefreshCw className="animate-spin" size={18} />
+                            ) : (
+                                <Trash2 size={18} />
+                            )}
+                        </button>
+                    </div>
                 </div>
             )}
 
-            <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[800px]">
+            <div className="flex-1 overflow-auto scrollbar-hide">
+                <table className="w-full text-left border-collapse min-w-[1000px]">
                     <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200">
-                            <th className="py-3 px-4 w-10">
+                        <tr className="bg-slate-50/50 border-b border-slate-100">
+                            <th className="py-5 px-6 w-12">
                                 <input
                                     type="checkbox"
                                     checked={accounts.length > 0 && selectedIds.size === accounts.length}
@@ -103,16 +142,15 @@ export const AccountTable: React.FC<Props> = ({ accounts, onRefresh }) => {
                                     className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                                 />
                             </th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Platform</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Account ID</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Profile Name</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Identifier</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">Status</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Last Login</th>
-                            <th className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
+                            <th className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Platform</th>
+                            <th className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Identifier</th>
+                            <th className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Assignee</th>
+                            <th className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th>
+                            <th className="py-5 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Sync Time</th>
+                            <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Operations</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-slate-50">
                         {accounts.length > 0 ? (
                             accounts.map(acc => (
                                 <AccountRow
@@ -125,8 +163,11 @@ export const AccountTable: React.FC<Props> = ({ accounts, onRefresh }) => {
                             ))
                         ) : (
                             <tr>
-                                <td colSpan={8} className="py-12 text-center text-slate-400 italic">
-                                    No accounts matching your filters
+                                <td colSpan={8} className="py-20 text-center text-slate-400 italic font-medium">
+                                    <div className="flex flex-col items-center gap-2 opacity-50">
+                                        <Smartphone size={32} />
+                                        <span>No active identifiers found in this view</span>
+                                    </div>
                                 </td>
                             </tr>
                         )}

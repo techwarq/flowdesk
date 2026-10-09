@@ -1,6 +1,6 @@
-
 import React, { useState, useEffect } from 'react';
 import { api } from '../api/client';
+import { X, Mail, Lock, Server, Cloud, Database, Key, Save, RefreshCw, Loader2, Globe } from 'lucide-react';
 
 interface Props {
     isOpen: boolean;
@@ -15,12 +15,23 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [cloudEnabled, setCloudEnabled] = useState(false);
     const [cloudUrl, setCloudUrl] = useState('');
     const [cloudKey, setCloudKey] = useState('');
+    const [proxies, setProxies] = useState('');
 
     useEffect(() => {
         if (isOpen) {
             loadSettings();
+            loadProxies();
         }
     }, [isOpen]);
+
+    const loadProxies = async () => {
+        try {
+            const list = await api.getProxies();
+            if (Array.isArray(list)) {
+                setProxies(list.join('\n'));
+            }
+        } catch (e) { console.error('Failed to load proxies', e); }
+    };
 
     const loadSettings = async () => {
         try {
@@ -28,8 +39,6 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             if (s.masterEmail) {
                 setMasterUser(s.masterEmail.user || '');
                 setMasterHost(s.masterEmail.host || 'imap.gmail.com');
-                // Encrypted pass not shown fully, but we can't really decrypt it here easily without backend help or just rewriting it.
-                // For security, usually we don't pre-fill password unless placeholder.
                 setMasterPass('********');
             }
             if (s.cloudConfig) {
@@ -46,28 +55,8 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         e.preventDefault();
         setLoading(true);
 
-        // Logic: if password is '********', assume unchanged. Ideally backend handles this.
-        // simpler: If user types new password, we send it (base64 encoded).
-        // If it's the placeholder, we might need a flag or just send existing data logic?
-        // Let's assume user re-enters password for now or we just send what we have.
-        // BETTER: If pass is '********', don't send `passEncrypted` update? 
-        // Actually, let's keep it simple: Just overwrite for now.
-
-        // Note: We build finalSettings below after fetching current settings
-        // to properly merge existing password if unchanged
-
-        // If undefined pass, backend might wipe it? The backend logic `saveSettings` does spread merge 
-        // `currentSettings = { ...currentSettings, ...settings }`.
-        // But `settings` object structure here is nested. `...` merge is shallow.
-        // We need to valid this. Backend logic:
-        // export async function saveSettings(settings: AppSettings) {
-        //    currentSettings = { ...currentSettings, ...settings };
-        // }
-        // Since `masterEmail` is a key, if we send { masterEmail: {...} }, it overwrites the whole object.
-        // So we MUST send `passEncrypted` if we want to keep it.
-        // We can fetch current first, merge locally, then send.
-
         try {
+            // Save Settings
             const current = await api.getSettings();
             const finalMasterEmail = {
                 ...current.masterEmail,
@@ -88,8 +77,14 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             };
 
             await api.saveSettings(finalSettings);
+
+            // Save Proxies
+            const proxyList = proxies.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+            await api.saveProxies(proxyList);
+
             onClose();
-            alert('Settings Saved');
+            // TODO: Use a proper toast notification system instead of alert
+            alert('Settings & Proxies Saved');
         } catch (err) {
             console.error(err);
             alert('Failed to save settings');
@@ -101,132 +96,192 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 overflow-y-auto max-h-[90vh]">
-                <h2 className="text-xl font-bold text-slate-900 mb-6 border-b pb-2">App Settings</h2>
-                <form onSubmit={handleSubmit} className="space-y-8">
-
-                    {/* Section 1 */}
-                    <section>
-                        <h3 className="text-lg font-medium text-slate-800 mb-2">Master OTP Configuration</h3>
-                        <p className="text-sm text-slate-500 mb-4">The app fetches OTPs from this email automatically for all accounts.</p>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Email Address</label>
-                                <input
-                                    type="email"
-                                    value={masterUser}
-                                    onChange={e => setMasterUser(e.target.value)}
-                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2 text-sm"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">App Password (16-char)</label>
-                                <input
-                                    type="password"
-                                    value={masterPass}
-                                    onChange={e => setMasterPass(e.target.value)}
-                                    placeholder="Enter App Password"
-                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2 text-sm"
-                                />
-                            </div>
-                            <div className="md:col-span-2">
-                                <label className="block text-sm font-medium text-slate-700">Email Provider</label>
-                                <select
-                                    value={masterHost}
-                                    onChange={e => setMasterHost(e.target.value)}
-                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2 text-sm"
-                                >
-                                    <option value="imap.gmail.com">Gmail</option>
-                                    <option value="outlook.office365.com">Outlook / Hotmail</option>
-                                </select>
-                            </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-bg-surface rounded-card shadow-float w-full max-w-2xl p-0 overflow-hidden scale-100 animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col border border-border-subtle">
+                {/* Header */}
+                <div className="px-6 py-5 border-b border-border-subtle flex items-center justify-between bg-bg-surface-hover shrink-0">
+                    <h2 className="text-lg font-black text-text-primary tracking-tight flex items-center gap-2">
+                        <div className="p-1.5 bg-bg-canvas rounded-lg text-text-secondary">
+                            <Server size={18} />
                         </div>
-                    </section>
+                        APP SETTINGS
+                    </h2>
+                    <button onClick={onClose} className="p-2 text-text-tertiary hover:text-text-primary hover:bg-bg-canvas rounded-lg transition-colors">
+                        <X size={20} />
+                    </button>
+                </div>
 
-                    {/* Section 2 */}
-                    <section>
-                        <h3 className="text-lg font-medium text-slate-800 mb-2">Cloud Sync (Supabase)</h3>
-                        <p className="text-sm text-slate-500 mb-4">Sync accounts & cookies across multiple devices.</p>
-
-                        <div className="flex items-center mb-4">
-                            <input
-                                id="cloud-enabled"
-                                type="checkbox"
-                                checked={cloudEnabled}
-                                onChange={e => setCloudEnabled(e.target.checked)}
-                                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                            />
-                            <label htmlFor="cloud-enabled" className="ml-2 block text-sm text-slate-900">Enable Cloud Sync</label>
-                        </div>
-
-                        <div className="space-y-4">
+                <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+                    <form id="settings-form" onSubmit={handleSubmit} className="space-y-8">
+                        {/* Section 1: Master OTP */}
+                        <section className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-slate-700">Cloud Database URL</label>
-                                <input
-                                    type="text"
-                                    value={cloudUrl}
-                                    onChange={e => setCloudUrl(e.target.value)}
-                                    placeholder="https://xxx.supabase.co"
-                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2 text-sm"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Service Role Key</label>
-                                <input
-                                    type="password"
-                                    value={cloudKey}
-                                    onChange={e => setCloudKey(e.target.value)}
-                                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2 text-sm font-mono"
-                                />
+                                <h3 className="text-sm font-bold text-text-primary flex items-center gap-2">
+                                    <Mail size={16} className="text-brand-accent" />
+                                    MASTER OTP CONFIGURATION
+                                </h3>
+                                <p className="text-xs text-text-secondary mt-1 ml-6">Configure the master email account to automatically fetch OTPs.</p>
                             </div>
 
-                            {cloudEnabled && (
-                                <div className="pt-2">
-                                    <button
-                                        type="button"
-                                        onClick={async () => {
-                                            if (confirm('Pull all data from Cloud? This might overwrite local changes.')) {
-                                                setLoading(true);
-                                                try {
-                                                    const res = await api.cloudSyncPull();
-                                                    if (res.success) alert('Sync Complete!');
-                                                    else alert('Sync Failed: ' + res.error);
-                                                } catch (e) { alert('Sync Error'); }
-                                                finally { setLoading(false); }
-                                            }
-                                        }}
-                                        className="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                                        </svg>
-                                        Pull Data from Cloud
-                                    </button>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 ml-6">
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-text-tertiary uppercase tracking-wider">Email Address</label>
+                                    <input
+                                        type="email"
+                                        value={masterUser}
+                                        onChange={e => setMasterUser(e.target.value)}
+                                        className="block w-full rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-sm py-2 px-3 transition-shadow bg-bg-canvas text-text-primary"
+                                        placeholder="master@example.com"
+                                    />
                                 </div>
-                            )}
-                        </div>
-                    </section>
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-text-tertiary uppercase tracking-wider">App Password</label>
+                                    <div className="relative">
+                                        <input
+                                            type="password"
+                                            value={masterPass}
+                                            onChange={e => setMasterPass(e.target.value)}
+                                            placeholder="Enter App Password"
+                                            className="block w-full rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-sm py-2 px-3 transition-shadow pr-10 bg-bg-canvas text-text-primary"
+                                        />
+                                        <div className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary">
+                                            <Lock size={14} />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="md:col-span-2 space-y-1.5">
+                                    <label className="text-xs font-bold text-text-tertiary uppercase tracking-wider">Email Provider</label>
+                                    <select
+                                        value={masterHost}
+                                        onChange={e => setMasterHost(e.target.value)}
+                                        className="block w-full rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-sm py-2 px-3 bg-bg-canvas cursor-pointer text-text-primary"
+                                    >
+                                        <option value="imap.gmail.com">Gmail (imap.gmail.com)</option>
+                                        <option value="outlook.office365.com">Outlook / Hotmail</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </section>
 
-                    <div className="flex justify-end space-x-3 pt-4 border-t">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-                        >
-                            {loading ? 'Saving...' : 'Save Settings'}
-                        </button>
-                    </div>
-                </form>
+                        <div className="border-t border-border-subtle" />
+
+                        {/* Section 2: Proxy Configuration */}
+                        <section className="space-y-4">
+                            <div>
+                                <h3 className="text-sm font-bold text-text-primary flex items-center gap-2">
+                                    <Globe size={16} className="text-emerald-500" />
+                                    PROXY CONFIGURATION
+                                </h3>
+                                <p className="text-xs text-text-secondary mt-1 ml-6">Manage your rotating proxy pool. Enter one proxy per line.</p>
+                                <p className="text-[10px] text-text-tertiary ml-6 font-mono">Format: http://user:pass@host:port</p>
+                            </div>
+
+                            <div className="ml-6 space-y-1.5">
+                                <textarea
+                                    value={proxies}
+                                    onChange={e => setProxies(e.target.value)}
+                                    placeholder={`http://user:pass@host:port\nhttp://host:port`}
+                                    className="block w-full h-32 rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-xs font-mono py-3 px-3 transition-shadow bg-bg-canvas text-text-primary resize-none"
+                                />
+                                <div className="text-[10px] text-text-tertiary flex justify-between">
+                                    <span>Supports HTTP/HTTPS proxies.</span>
+                                    <span>{proxies.split('\n').filter(p => p.trim()).length} proxies loaded</span>
+                                </div>
+                            </div>
+                        </section>
+
+                        <div className="border-t border-border-subtle" />
+
+                        {/* Section 3: Cloud Sync */}
+                        <section className="space-y-4">
+                            <div>
+                                <h3 className="text-sm font-bold text-text-primary flex items-center gap-2">
+                                    <Cloud size={16} className="text-blue-500" />
+                                    CLOUD SYNCHRONIZATION
+                                </h3>
+                                <p className="text-xs text-text-secondary mt-1 ml-6">Sync accounts and sessions across devices.</p>
+                            </div>
+
+                            <div className="ml-6 flex items-center mb-4">
+                                <label className="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" checked={cloudEnabled} onChange={e => setCloudEnabled(e.target.checked)} className="sr-only peer" />
+                                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand-primary/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-primary"></div>
+                                    <span className="ml-3 text-sm font-medium text-text-primary">Enable Cloud Sync</span>
+                                </label>
+                            </div>
+
+                            <div className={`space-y-4 ml-6 transition-opacity ${cloudEnabled ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-text-tertiary uppercase tracking-wider flex items-center gap-1.5">
+                                        <Database size={12} /> Cloud Database URL
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={cloudUrl}
+                                        onChange={e => setCloudUrl(e.target.value)}
+                                        placeholder="https://xxx.supabase.co"
+                                        className="block w-full rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-sm py-2 px-3 font-mono text-text-secondary bg-bg-canvas"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-text-tertiary uppercase tracking-wider flex items-center gap-1.5">
+                                        <Key size={12} /> Service Role Key
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={cloudKey}
+                                        onChange={e => setCloudKey(e.target.value)}
+                                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                                        className="block w-full rounded-xl border-border-subtle shadow-sm focus:border-brand-primary focus:ring-brand-primary text-sm py-2 px-3 font-mono text-text-secondary bg-bg-canvas"
+                                    />
+                                </div>
+
+                                {cloudEnabled && (
+                                    <div className="pt-2">
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                if (confirm('Pull all data from Cloud? This might overwrite local changes.')) {
+                                                    setLoading(true);
+                                                    try {
+                                                        const res = await api.cloudSyncPull();
+                                                        if (res.success) alert('Sync Complete!');
+                                                        else alert('Sync Failed: ' + res.error);
+                                                    } catch (e) { alert('Sync Error'); }
+                                                    finally { setLoading(false); }
+                                                }
+                                            }}
+                                            className="text-xs font-bold text-brand-primary hover:text-indigo-800 bg-indigo-50 hover:bg-brand-primary/10 px-4 py-2 rounded-lg transition-colors flex items-center gap-2 w-fit border border-brand-primary/20"
+                                        >
+                                            <RefreshCw size={14} />
+                                            PULL DATA FROM CLOUD
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </section>
+                    </form>
+                </div>
+
+                {/* Footer */}
+                <div className="px-6 py-4 border-t border-border-subtle bg-bg-canvas flex justify-end gap-3 shrink-0">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="px-4 py-2.5 text-xs font-bold text-text-secondary bg-bg-surface border border-border-subtle rounded-xl hover:bg-bg-surface-hover transition-colors"
+                    >
+                        CANCEL
+                    </button>
+                    <button
+                        type="submit"
+                        form="settings-form"
+                        disabled={loading}
+                        className="px-6 py-2.5 text-xs font-bold text-white bg-brand-primary rounded-xl hover:opacity-90 transition-colors shadow-lg shadow-brand-primary/20 flex items-center gap-2"
+                    >
+                        {loading ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                        {loading ? 'SAVING...' : 'SAVE SETTINGS'}
+                    </button>
+                </div>
             </div>
         </div>
     );

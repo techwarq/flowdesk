@@ -2,11 +2,17 @@ import { BrowserContext } from 'playwright';
 import fs from 'fs-extra';
 import path from 'path';
 import { ACCOUNTS_FILE, DATA_DIR, PROFILES_DIR, ENCRYPTED_DIR } from './config.js';
-import { pushAccounts, pushAccount, pushCookies, deleteCloudAccount } from './cloud.js';
+import { pushAccounts, pushAccount, pushCookies, deleteCloudAccount, fetchAccountsFromCloud, fetchAccountFromCloud, deleteAccountFromCloud, saveAccountsToDB, fetchCookiesFromCloud, saveCookies_DB, updateAccountOwnershipInDB } from './cloud_provider.js';
+import { deleteFingerprint } from './fingerprintDb.js';
 
 const COOKIES_DIR = path.join(DATA_DIR, 'cookies');
 
-export type Platform = 'flipkart' | 'shopsy';
+export type Platform =
+    | 'flipkart' | 'shopsy'
+    | 'iqoo' | 'vivo' | 'oppo' | 'realme'
+    | 'xiaomi' | 'redmi' | 'oneplus'
+    | 'samsung' | 'amazon'
+    | 'vijaysales' | 'reliancedigital';
 export type LoginType = 'email' | 'mobile';
 export type AccountStatus =
     | 'New'           // Not yet initialized
@@ -35,6 +41,36 @@ export interface Account {
         passEncrypted: string;
         host: string;
     };
+    details?: {
+        name?: string;
+        mobile?: string;
+        email?: string;
+        superCoins?: string;
+        isPlus?: boolean;
+        gvBalance?: string;
+        fingerprint?: any;
+    };
+    proxyOffset?: number; // Used for IP rotation
+    proxy?: string; // Explicitly assigned proxy
+    orders?: Order[];
+}
+
+export interface Order {
+    orderId: string;
+    productName: string;
+    status: string; // e.g., 'Delivered', 'Cancelled', 'On the way'
+    deliveryDate: string; // or expected date
+    imageUrl?: string;
+    price?: string;
+    orderUrl: string;
+    otp?: string;
+    receiverName?: string;
+    trackingId?: string;
+    deliveryDetails?: string;
+    address?: string;
+    mobileLast4?: string;
+    orderDate?: string;
+    realtimeStatus?: string;
 }
 
 export interface AccountsData {
@@ -47,109 +83,95 @@ export interface AccountsData {
 let saveQueue: Promise<void> = Promise.resolve();
 
 /**
- * Load all accounts from accounts.json
+ * Load accounts from cloud database with optional user filtering
  */
-export async function loadAccounts(): Promise<AccountsData> {
+export async function loadAccounts(userId?: string): Promise<AccountsData> {
     const operation = async () => {
-        if (await fs.pathExists(ACCOUNTS_FILE)) {
-            const raw = await fs.readJSON(ACCOUNTS_FILE);
-            // Migration: Handle legacy array format
-            if (Array.isArray(raw)) {
-                const migrated = { accounts: raw };
-                await fs.writeJSON(ACCOUNTS_FILE, migrated, { spaces: 2 });
-                return migrated as unknown as AccountsData;
-            }
-            if (!raw.accounts) return { accounts: [] };
-            return raw;
+        try {
+            const dbAccounts = await fetchAccountsFromCloud(userId);
+            return { accounts: dbAccounts || [] };
+        } catch (error) {
+            console.error('[Accounts] Failed to load accounts from cloud:', error);
+            return { accounts: [] };
         }
-        const defaultData: AccountsData = { accounts: [] };
-        await fs.writeJSON(ACCOUNTS_FILE, defaultData, { spaces: 2 });
-        return defaultData;
     };
-
-    // We don't necessarily need to queue reads, but let's queue EVERYTHING to be 100% safe
     const result = saveQueue.then(operation);
-    saveQueue = result.then(() => { }, () => { }); // Catch errors to not block the queue
+    saveQueue = result.then(() => { }, () => { });
     return result;
 }
 
-/**
- * Save accounts data safely using a temporary file
- */
-export async function saveAccounts(data: AccountsData): Promise<void> {
+export async function saveAccounts(account: Account) {
     const operation = async () => {
-        const tmpFile = `${ACCOUNTS_FILE}.tmp`;
-        try {
-            await fs.writeJSON(tmpFile, data, { spaces: 2 });
-            await fs.move(tmpFile, ACCOUNTS_FILE, { overwrite: true });
-        } catch (e) {
-            console.error('[Database] Failed to save accounts atomically:', e);
-            throw e;
+
+        const cookies = await fetchCookiesFromCloud(account.id, account.platform);
+
+        if (cookies && cookies.length > 0) {
+            await saveAccountsToDB(account);
+            await saveCookies_DB(account.id, account.platform, cookies);
+        } else {
+            // [MODIFIED] For persistent partitions (Oppo/Realme), we might not have cookies.
+            // Log warning but allow saving account metadata.
+            console.warn(`[Accounts] Warning: No cookies found for account ${account.id}. Saving metadata only.`);
+            await saveAccountsToDB(account);
         }
     };
-
-    saveQueue = saveQueue.then(operation).then(() => {
-        // Attempt cloud sync in background
-        pushAccounts();
-    }).catch(err => {
-        console.error('[Database] Critical error in save queue:', err);
+    saveQueue = saveQueue.then(operation).catch(err => {
+        console.error('[Accounts] Critical error in save queue:', err);
     });
     return saveQueue;
 }
-
-/**
- * Get a single account by ID
- */
 export async function getAccount(accountId: string): Promise<Account | undefined> {
-    const data = await loadAccounts();
     const id = accountId.toLowerCase().trim();
-    return data.accounts.find(a => a.id.toLowerCase() === id);
+    return fetchAccountFromCloud(id);
 }
-
-/**
- * Create or update an account
- */
-export async function upsertAccount(account: Partial<Account> & { id: string; platform: Platform }): Promise<Account> {
-    const data = await loadAccounts();
-    const id = account.id.toLowerCase().trim();
-    const existingIndex = data.accounts.findIndex(a => a.id.toLowerCase() === id);
+export async function upsertAccount(
+    input: Partial<Account> & { id: string; platform: Platform }
+): Promise<Account> {
+    const id = input.id.toLowerCase().trim();
     const now = new Date().toISOString();
 
-    if (existingIndex >= 0) {
-        // Update existing
-        const existing = data.accounts[existingIndex];
-        const updated: Account = {
+    // Load existing account from DB (cloud only) - OPTIMIZED: Fetch only one
+    const existing = await fetchAccountFromCloud(id);
+
+    let resultAccount: Account;
+
+    if (existing) {
+        // UPDATE
+        resultAccount = {
             ...existing,
-            ...account,
+            ...input,
             updatedAt: now,
-            // Preserve userId if not provided in update
-            userId: account.userId || existing.userId
+            userId: input.userId ?? existing.userId
         };
-        data.accounts[existingIndex] = updated;
-        await saveAccounts(data);
-        return updated;
     } else {
-        // Create new
-        const newAccount: Account = {
-            loginType: 'mobile',
-            identifier: '',
-            status: 'New',
+        // CREATE (no session assumed)
+        resultAccount = {
+            id,
+            platform: input.platform,
+            loginType: input.loginType ?? 'mobile',
+            identifier: input.identifier ?? '',
+            status: 'New',              // always New at creation
             createdAt: now,
             updatedAt: now,
-
-            ...account,
-            id: id // Force standardized ID
+            userId: input.userId,
+            proxyOffset: input.proxyOffset,
+            proxy: input.proxy
         };
-        data.accounts.push(newAccount);
-        await saveAccounts(data);
-        await pushAccount(newAccount); // Ensure cloud has it immediately
-        return newAccount;
     }
+
+    // 🔥 SAVE ONLY ACCOUNT METADATA TO DB
+    await saveAccountsToDB(resultAccount);
+
+
+
+    console.log(
+        `[Accounts] ${existing ? 'Updated' : 'Created'} account ${id}`
+    );
+
+    return resultAccount;
 }
 
-/**
- * Update account status
- */
+
 export async function updateAccountStatus(
     accountId: string,
     status: AccountStatus,
@@ -167,14 +189,11 @@ export async function updateAccountStatus(
         } else if (errorCode) {
             account.errorCode = errorCode;
         }
-        await saveAccounts(data);
-        await pushAccount(account); // Sync status change
+        await saveAccounts(account);
+        pushAccount(account).catch(e => console.error('[Accounts] Background status update failed:', e));
     }
 }
 
-/**
- * Update last login timestamp
- */
 export async function updateLastLogin(accountId: string): Promise<void> {
     const data = await loadAccounts();
     const id = accountId.toLowerCase().trim();
@@ -183,78 +202,80 @@ export async function updateLastLogin(accountId: string): Promise<void> {
         account.lastLoginAt = new Date().toISOString();
         account.lastValidateAt = account.lastLoginAt;
         account.updatedAt = account.lastLoginAt;
-        account.lastValidateAt = account.lastLoginAt;
         account.status = 'Healthy';
-        account.updatedAt = account.lastLoginAt;
         delete account.errorCode;
-        await saveAccounts(data);
-        await pushAccount(account); // Sync health/login time
+        await saveAccounts(account);
+        pushAccount(account).catch(e => console.error('[Accounts] Background login update failed:', e));
     }
 }
 
-/**
- * Get all accounts for a specific platform
- */
 export async function getAccountsByPlatform(platform: Platform): Promise<Account[]> {
     const data = await loadAccounts();
     return data.accounts.filter(a => a.platform === platform);
 }
 
-/**
- * Get all account IDs
- */
 export async function getAllAccountIds(): Promise<string[]> {
     const data = await loadAccounts();
     return data.accounts.map(a => a.id);
 }
 
-/**
- * Delete an account
- */
 export async function deleteAccount(accountId: string): Promise<boolean> {
-    const data = await loadAccounts();
     const id = accountId.toLowerCase().trim();
-    const index = data.accounts.findIndex(a => a.id.toLowerCase() === id);
-    if (index >= 0) {
-        const account = data.accounts[index];
-        data.accounts.splice(index, 1);
-        await saveAccounts(data);
+    const data = await loadAccounts();
 
-        // Cleanup Files
-        try {
-            // 1. Delete Cookie File
+    // Find the account first to get platform details for cleanup
+    const account = data.accounts.find(a => a.id.toLowerCase() === id);
+
+    if (!account) return false;
+
+    // Remove from in-memory list
+    data.accounts = data.accounts.filter(a => a.id.toLowerCase() !== id);
+
+    // Cloud Delete (Background)
+    // This deletes: accounts row, cookies row, local_storage row, fingerprints row
+    deleteAccountFromCloud(id).catch(e => console.error('[Accounts] Background cloud delete failed:', e));
+
+    // Local Cleanup
+    try {
+        // 0. Delete Fingerprint (Cloud/Local if applicable)
+        deleteFingerprint(id).catch(e => console.error('[Accounts] Failed to delete fingerprint:', e));
+        // 1. Delete Cookie File
+        // Naming convention: {id}_{platform}.json
+        if (account.platform) {
             const cookiePath = path.join(COOKIES_DIR, `${id}_${account.platform}.json`);
             if (await fs.pathExists(cookiePath)) {
                 await fs.remove(cookiePath);
+                console.log(`[Accounts] Deleted local cookie file: ${cookiePath}`);
             }
+        }
 
-            // 2. Delete Profile Directory
+        // 2. Delete Browser Profile Directory
+        // Path: profiles/{platform}/{id}
+        if (account.platform) {
             const profilePath = path.join(PROFILES_DIR, account.platform, id);
             if (await fs.pathExists(profilePath)) {
                 await fs.remove(profilePath);
+                console.log(`[Accounts] Deleted persistent profile directory: ${profilePath}`);
             }
-
-            // 3. Delete Encrypted Backup
-            const encPath = path.join(ENCRYPTED_DIR, account.platform, `${id}.zip.enc`);
-            if (await fs.pathExists(encPath)) {
-                await fs.remove(encPath);
-            }
-
-            // 4. Delete Local Storage File
-            const lsPath = path.join(DATA_DIR, 'storage', `${id}_${account.platform}.json`);
-            if (await fs.pathExists(lsPath)) {
-                await fs.remove(lsPath);
-            }
-
-            // 5. Delete from Cloud
-            await deleteCloudAccount(id).catch(err => {
-                console.error(`[Cloud] Background deletion failed for ${id}:`, err);
-            });
-        } catch (e) {
-            console.error(`Failed to cleanup files for ${id}:`, e);
         }
 
-        return true;
+    } catch (e) {
+        console.warn('Cleanup warning:', e);
     }
-    return false;
+
+    console.log(`[Accounts] Deleted account ${id} (and associated data)`);
+    return true;
+}
+
+export async function moveAccounts(accountIds: string[], targetUserId: string): Promise<number> {
+    if (!accountIds || accountIds.length === 0) return 0;
+
+    try {
+        // Use bulk update for efficiency and data consistency
+        await updateAccountOwnershipInDB(accountIds, targetUserId);
+        return accountIds.length;
+    } catch (e: any) {
+        console.error('[Accounts] Failed to move accounts:', e);
+        throw e;
+    }
 }

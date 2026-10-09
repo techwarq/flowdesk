@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Astra Workspace</title>
+  <style>
+    :root {
+      --bg-color: #F6F6F6;
+      /* Light Gray Background */
+      --accent: #000000;
+      /* Black Accent */
+      --text-main: #111111;
+      /* Soft Black */
+      --text-muted: #6B7280;
+      /* Gray-500 */
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+      -webkit-app-region: drag;
+      cursor: default;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+      width: 100%;
+    }
+
+    /* Logo Animation */
+    .logo-container {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      margin-bottom: 24px;
+      animation: float 3s ease-in-out infinite;
+    }
+
+    .logo-bg {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at center, rgba(0, 0, 0, 0.1), transparent 70%);
+      border-radius: 16px;
+      opacity: 0.5;
+      filter: blur(15px);
+      animation: pulse-glow 3s ease-in-out infinite;
+    }
+
+    .logo-icon {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background: #FFFFFF;
+      /* Pure White */
+      border: 1px solid #E5E7EB;
+      /* Subtle Border */
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #000000;
+      /* Black Icon */
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+    }
+
+    /* Typography */
+    .brand-name {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+      color: var(--text-main);
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--text-muted);
+      margin-bottom: 40px;
+      opacity: 0.8;
+    }
+
+    /* Loading Bar */
+    .loader-container {
+      width: 140px;
+      height: 3px;
+      background: rgba(0, 0, 0, 0.05);
+      /* Light gray track */
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .loader-bar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 50%;
+      background: var(--accent);
+      border-radius: 4px;
+      animation: loading 1.5s ease-in-out infinite;
+    }
+
+    .status-text {
+      margin-top: 16px;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 600;
+      animation: fade-pulse 2s ease-in-out infinite;
+    }
+
+    /* Animations */
+    @keyframes float {
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-4px);
+      }
+    }
+
+    @keyframes pulse-glow {
+
+      0%,
+      100% {
+        opacity: 0.2;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.4;
+        transform: scale(1.1);
+      }
+    }
+
+    @keyframes loading {
+      0% {
+        left: -50%;
+        width: 30%;
+      }
+
+      50% {
+        left: 25%;
+        width: 50%;
+      }
+
+      100% {
+        left: 100%;
+        width: 30%;
+      }
+    }
+
+    @keyframes fade-pulse {
+
+      0%,
+      100% {
+        opacity: 0.5;
+      }
+
+      50% {
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="drag-region"></div>
+    <div class="container">
+      <!-- Premium SVG Logo -->
+      <svg width="120" height="120" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="logo">
+        <rect width="100" height="100" rx="24" fill="black" />
+        <path d="M50 25L25 75H38L50 50L62 75H75L50 25Z" fill="white" />
+        <circle cx="50" cy="45" r="4" fill="black" />
+      </svg>
+
+      <div class="brand-name">ASTRA</div>
+      <div class="tagline">WORKSPACE</div>
+
+      <div class="loader-container">
+        <div class="loader-bar"></div>
+      </div>
+
+      <div class="status-text">INITIALIZING SYSTEM...</div>
+    </div>
+
+    <script>
+      const { ipcRenderer } = require('electron');
+      ipcRenderer.on('update-status', (event, text) => {
+        const statusEl = document.querySelector('.status-text');
+        if (statusEl) {
+          statusEl.innerText = text.toUpperCase();
+          statusEl.style.opacity = '1';
+        }
+      });
+    </script>
+</body>
+
+</html>

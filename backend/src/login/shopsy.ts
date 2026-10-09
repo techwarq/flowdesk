@@ -9,17 +9,21 @@ import { injectOverlay } from '../overlay.js';
 import { injectFlipkartCookiesIntoShopsy } from '../cookies.js';
 import { updateLastLogin, updateAccountStatus } from '../accounts.js';
 import { browsers } from '../browserManager.js';
-import { pushCookies } from '../cloud.js';
+import { pushCookies, pushLocalStorage } from '../cloud_provider.js';
+import { saveLocalStorage } from '../localStorage.js';
+import { getProxyForAccount } from '../proxy.js';
+import { getChromiumPath } from '../utils/browserPath.js';
 
 export interface LoginOptions {
     accountId: string;
     identifier: string; // Phone
     headless?: boolean;
     keepOpen?: boolean;
+    forceFresh?: boolean;
 }
 
 export async function loginShopsy(options: LoginOptions) {
-    const { accountId, identifier, headless = false, keepOpen = false } = options;
+    const { accountId, identifier, headless = false, keepOpen = false, forceFresh = false } = options;
     const log = getAccountLogger(accountId);
     const platform = 'shopsy';
 
@@ -27,6 +31,11 @@ export async function loginShopsy(options: LoginOptions) {
     const fingerprint = generateFingerprint(platform, accountId);
 
     log.info(`Starting Shopsy login flow for ${accountId} (Mobile Emulation)`);
+
+    if (forceFresh && await fs.pathExists(profilePath)) {
+        log.info('Force fresh - clearing old shopsy profile...');
+        await fs.remove(profilePath);
+    }
 
     let context: BrowserContext;
     const lockFile = path.join(profilePath, 'SingletonLock');
@@ -39,8 +48,17 @@ export async function loginShopsy(options: LoginOptions) {
         }
     } catch (err) { }
 
+    // PROXY DISABLED for login - only use during IP rotation
+    // const proxyConfig = await getProxyForAccount(accountId);
+    // if (proxyConfig) {
+    //     log.info(`Using proxy for ${accountId}: ${proxyConfig.server}`);
+    // }
+    log.info(`Launching Shopsy browser (DIRECT - no proxy for speed)...`);
+    const executablePath = getChromiumPath();
+
     try {
         context = await chromium.launchPersistentContext(profilePath, {
+            executablePath,
             headless: headless,
             viewport: null, // Desktop view
             userAgent: fingerprint.userAgent,
@@ -48,6 +66,7 @@ export async function loginShopsy(options: LoginOptions) {
             locale: fingerprint.locale,
             timezoneId: fingerprint.timezoneId,
             permissions: ['geolocation', 'notifications'],
+            // proxy: proxyConfig, // DISABLED: Proxy slows login
             args: [
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
@@ -67,6 +86,7 @@ export async function loginShopsy(options: LoginOptions) {
             } catch (err) { }
 
             context = await chromium.launchPersistentContext(profilePath, {
+                executablePath,
                 headless: headless,
                 viewport: null, // Desktop view
                 userAgent: fingerprint.userAgent,
@@ -74,6 +94,7 @@ export async function loginShopsy(options: LoginOptions) {
                 locale: fingerprint.locale,
                 timezoneId: fingerprint.timezoneId,
                 permissions: ['geolocation', 'notifications'],
+                // proxy: proxyConfig, // DISABLED: Proxy slows login
                 args: [
                     '--disable-blink-features=AutomationControlled',
                     '--no-sandbox',
@@ -119,6 +140,13 @@ export async function loginShopsy(options: LoginOptions) {
             }
 
             try { await pushCookies(accountId, 'shopsy'); } catch { }
+            try {
+                const ls = await page.evaluate(() => JSON.stringify(window.localStorage));
+                if (ls && ls !== '{}') {
+                    await saveLocalStorage(accountId, JSON.parse(ls), 'shopsy');
+                    await pushLocalStorage(accountId, 'shopsy');
+                }
+            } catch { }
 
             if (!keepOpen) await context.close();
             await saveProfileToDisk(platform, accountId);
@@ -148,8 +176,8 @@ export async function loginShopsy(options: LoginOptions) {
 
         // Wait for typical "My Account" or "Profile" indicator on mobile
         await Promise.race([
-            page.waitForURL(/.*\/account.*/, { timeout: 180000 }), // Navigate to account page
-            page.waitForSelector('text=My Orders', { timeout: 180000 })
+            page.waitForURL(/.*\/account.*/, { timeout: 300000 }), // 5 minutes
+            page.waitForSelector('text=My Orders', { timeout: 300000 })
         ]);
 
         log.info('Login detected successfully!');
@@ -167,6 +195,13 @@ export async function loginShopsy(options: LoginOptions) {
         } catch (e: any) {
             log.warn('Failed to sync cookies to cloud:', e.message);
         }
+        try {
+            const ls = await page.evaluate(() => JSON.stringify(window.localStorage));
+            if (ls && ls !== '{}') {
+                await saveLocalStorage(accountId, JSON.parse(ls), 'shopsy');
+                await pushLocalStorage(accountId, 'shopsy');
+            }
+        } catch { }
 
         if (!keepOpen) await context.close();
         await saveProfileToDisk(platform, accountId);

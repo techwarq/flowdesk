@@ -131,20 +131,25 @@ export async function pushAccount(acc: any) {
     if (!client) return;
 
     try {
+        // Build details object with optional fields
+        const details: any = {
+            loginType: acc.loginType,
+            emailConfig: acc.emailConfig,
+            assignedTo: acc.assignedTo,
+            createdAt: acc.createdAt,
+            updatedAt: acc.updatedAt,
+            errorCode: acc.errorCode
+        };
+        if (acc.proxy) details.proxy = acc.proxy;
+        if (acc.lastLoginAt) details.lastLoginAt = acc.lastLoginAt;
+
+        // Use only core columns that definitely exist in the schema
         const payload: any = {
             id: acc.id.toLowerCase(),
             platform: acc.platform,
             identifier: acc.identifier,
             status: acc.status,
-            last_login_at: acc.lastLoginAt || null,
-            details: {
-                loginType: acc.loginType,
-                emailConfig: acc.emailConfig,
-                assignedTo: acc.assignedTo,
-                createdAt: acc.createdAt,
-                updatedAt: acc.updatedAt,
-                errorCode: acc.errorCode
-            },
+            details: details,
             updated_at: new Date().toISOString()
         };
 
@@ -166,114 +171,272 @@ export async function pushAccount(acc: any) {
 }
 
 /**
- * Push accounts.json to cloud (SQL Table: accounts)
+ * Fetch all accounts from cloud database with optional filtering
  */
-export async function pushAccounts() {
+export async function fetchAccountsFromCloud(userId?: string): Promise<any[]> {
     const client = getSupabaseAdminClient();
     if (!client) {
-        logger.debug('[Cloud] pushAccounts: Cloud sync not enabled or configured.');
-        return;
+        logger.warn('[Cloud] fetchAccountsFromCloud: Cloud not configured');
+        return [];
     }
 
     try {
-        if (!await fs.pathExists(ACCOUNTS_FILE)) return;
-        const data = await fs.readJSON(ACCOUNTS_FILE);
-        const accounts = data.accounts || [];
+        let allDbAccounts: any[] = [];
+        let from = 0;
+        const limit = 1000;
+        let hasMore = true;
 
-        for (const acc of accounts) {
-            // Flatten/Structure data for SQL
-            const payload: any = {
-                id: acc.id.toLowerCase(),
-                platform: acc.platform,
-                identifier: acc.identifier,
-                status: acc.status,
-                last_login_at: acc.lastLoginAt || null,
-                details: {
-                    loginType: acc.loginType,
-                    emailConfig: acc.emailConfig,
-                    assignedTo: acc.assignedTo,
-                    createdAt: acc.createdAt,
-                    updatedAt: acc.updatedAt,
-                    errorCode: acc.errorCode
-                },
-                updated_at: new Date().toISOString()
-            };
-
-            // Only send user_id if we have it, otherwise let DB default or keep existing
-            if (acc.userId) {
-                payload.user_id = acc.userId;
+        while (hasMore) {
+            let query = client
+                .from('accounts')
+                .select('*');
+            
+            if (userId) {
+                if (userId === 'unassigned') {
+                    query = query.is('user_id', null);
+                } else {
+                    query = query.eq('user_id', userId);
+                }
             }
 
-            const { error } = await client
-                .from('accounts')
-                .upsert(payload);
+            const { data: dbPage, error } = await query
+                .range(from, from + limit - 1);
 
             if (error) throw error;
+
+            if (dbPage && dbPage.length > 0) {
+                allDbAccounts = allDbAccounts.concat(dbPage);
+                from += limit;
+                if (dbPage.length < limit) {
+                    hasMore = false;
+                }
+            } else {
+                hasMore = false;
+            }
         }
 
-        logger.info(`[Cloud] Synced ${accounts.length} accounts to SQL.`);
+        if (allDbAccounts.length > 0) {
+            // Map DB format to Account format
+            const accounts = allDbAccounts.map((row: any) => ({
+                id: row.id,
+                userId: row.user_id,
+                platform: row.platform,
+                identifier: row.identifier,
+                status: row.status,
+                lastLoginAt: row.last_login_at,
+                proxy: row.proxy,
+                // Spread details back
+                ...(row.details || {})
+            }));
+            logger.info(`[Cloud] Fetched ${accounts.length} accounts from DB`);
+            return accounts;
+        }
+        return [];
     } catch (e: any) {
-        logger.error(`[Cloud] Account sync failed: ${e.message}`);
+        logger.error(`[Cloud] fetchAccountsFromCloud failed: ${e.message}`);
+        return [];
     }
 }
 
 /**
- * Push ALL cookies from local files to cloud (for initial sync)
+ * Fetch single account from cloud database
  */
-export async function pushAllCookies() {
+export async function fetchAccountFromCloud(accountId: string): Promise<any | null> {
     const client = getSupabaseAdminClient();
-    if (!client) {
-        logger.debug('[Cloud] pushAllCookies: Cloud sync not enabled.');
-        return;
+    if (!client) return null;
+
+    try {
+        const { data: row, error } = await client
+            .from('accounts')
+            .select('*')
+            .eq('id', accountId.toLowerCase())
+            .maybeSingle();
+
+        if (error) {
+            throw error;
+        }
+
+        if (row) {
+            return {
+                id: row.id,
+                userId: row.user_id,
+                platform: row.platform,
+                identifier: row.identifier,
+                status: row.status,
+                lastLoginAt: row.last_login_at,
+                proxy: row.proxy,
+                ...(row.details || {})
+            };
+        }
+        return null;
+    } catch (e: any) {
+        logger.error(`[Cloud] fetchAccountFromCloud failed for ${accountId}: ${e.message}`);
+        return null;
+    }
+}
+
+/**
+ * Delete account from cloud database
+ */
+export async function deleteAccountFromCloud(accountId: string): Promise<boolean> {
+    const client = getSupabaseAdminClient();
+    if (!client) return false;
+
+    try {
+        const id = accountId.toLowerCase();
+
+        // Delete all associated data in parallel for speed
+        await Promise.all([
+            client.from('cookies').delete().eq('account_id', id),
+            client.from('local_storage').delete().eq('account_id', id),
+            client.from('fingerprints').delete().eq('account_id', id)
+        ]);
+
+        // Delete account record last
+        const { error } = await client.from('accounts').delete().eq('id', id);
+
+        if (error) throw error;
+
+        logger.info(`[Cloud] Deleted account ${id} (and all associated data) from DB`);
+        return true;
+    } catch (e: any) {
+        logger.error(`[Cloud] deleteAccountFromCloud failed: ${e.message}`);
+        return false;
+    }
+}
+
+/**
+ * @deprecated Legacy function - no longer used. Individual account operations now use pushAccount() directly.
+ * This function was previously used to sync accounts.json to DB, but we no longer use local files.
+ */
+export async function pushAccounts() {
+    // Deprecated - all account operations now use pushAccount() directly for DB writes
+    logger.debug('[Cloud] pushAccounts: DEPRECATED - Use pushAccount() for individual account operations');
+}
+
+export async function saveAccountsToDB(data: any) {
+    const client = getSupabaseAdminClient();
+    if (!client) return;
+
+    // Build details object with optional fields
+    const details: any = data.details || {};
+    if (data.proxy) details.proxy = data.proxy;
+    if (data.lastLoginAt) details.lastLoginAt = data.lastLoginAt;
+
+    // Use only core columns that definitely exist in the schema
+    const payload: any = {
+        id: data.id?.toLowerCase(),
+        platform: data.platform,
+        identifier: data.identifier,
+        status: data.status,
+        details: details,
+        updated_at: new Date().toISOString()
+    };
+
+    // Only include user_id if present
+    if (data.userId) {
+        payload.user_id = data.userId;
     }
 
     try {
-        if (!await fs.pathExists(ACCOUNTS_FILE)) return;
-        const data = await fs.readJSON(ACCOUNTS_FILE);
-        const accounts = data.accounts || [];
-
-        let totalSynced = 0;
-        for (const acc of accounts) {
-            const platform = acc.platform as 'flipkart' | 'shopsy';
-            await pushCookies(acc.id, platform);
-            totalSynced++;
-        }
-
-        logger.info(`[Cloud] Attempted cookie sync for ${totalSynced} accounts.`);
+        const { error } = await client.from('accounts').upsert(payload, { onConflict: 'id' });
+        if (error) throw error;
+        logger.info(`[Cloud] Saved account ${data.id} to DB`);
     } catch (e: any) {
-        logger.error(`[Cloud] pushAllCookies failed: ${e.message}`);
+        logger.error(`[Cloud] saveAccountsToDB failed for ${data.id}: ${e.message}`);
+        throw e;
     }
+}
+
+export async function saveCookies_DB(accountId: string, platform: string, cookies: any[]) {
+    const client = getSupabaseAdminClient();
+    if (!client) return;
+
+    // 1. Delete existing cookies for this account & platform
+    await client
+        .from('cookies')
+        .delete()
+        .eq('account_id', accountId.toLowerCase())
+        .eq('platform', platform);
+
+    if (!cookies || cookies.length === 0) return;
+
+    // 2. Prepare cookie rows
+    const rows = cookies.map(c => ({
+        account_id: accountId.toLowerCase(),
+        platform: platform,
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        http_only: c.httpOnly,
+        expiration_date: c.expires || c.expirationDate,
+        same_site: c.sameSite,
+        session: c.session
+    }));
+
+    // 3. Insert new cookies
+    const { error } = await client
+        .from('cookies')
+        .insert(rows);
+
+    if (error) {
+        console.error('Failed to save cookies:', error);
+        throw error;
+    }
+}
+
+/**
+ * @deprecated Legacy function - no longer used. Cookie operations now use pushCookies() directly.
+ * This function was previously used for initial sync from local files to DB.
+ */
+export async function pushAllCookies() {
+    // Deprecated - cookies are now saved directly to DB via pushCookies() during login
+    logger.debug('[Cloud] pushAllCookies: DEPRECATED - Cookies are synced directly to DB during login');
 }
 
 /**
  * Push specific cookie file to cloud (SQL Table: cookies)
  */
-export async function pushCookies(accountId: string, platform: 'flipkart' | 'shopsy') {
+export async function pushCookies(accountId: string, platform: string, directCookies?: any[]) {
     const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
-        const filePath = getCookieFilePath(accountId, platform);
-        if (!await fs.pathExists(filePath)) return;
+        let cookies = directCookies;
+        if (!cookies) {
+            const filePath = getCookieFilePath(accountId, platform);
+            if (await fs.pathExists(filePath)) {
+                cookies = await fs.readJSON(filePath);
+            }
+        }
 
-        const cookies = await fs.readJSON(filePath);
-        if (!Array.isArray(cookies)) return;
+        if (!cookies || !Array.isArray(cookies)) return;
 
-        // 1. Delete existing cookies for this account/platform to avoid duplicates
-        // Note: Using a transaction or carefully defined deletion is safer
-        const { error: delError } = await client
-            .from('cookies')
-            .delete()
-            .eq('account_id', accountId.toLowerCase())
-            .eq('platform', platform);
+        if (!cookies || !Array.isArray(cookies)) return;
 
-        if (delError) throw delError;
-
-        // 2. Insert new cookies
+        // 2. Insert new cookies using UPSERT to prevent data loss (merge)
         // Map playright/extension cookie format to DB schema
+        let userId: string | null = null;
+        try {
+            const { data: accData } = await client
+                .from('accounts')
+                .select('user_id')
+                .eq('id', accountId.toLowerCase())
+                .maybeSingle();
+
+            if (accData?.user_id) {
+                userId = accData.user_id;
+            }
+        } catch (err) {
+            // ignore
+        }
+
         const rows = cookies.map((c: any) => ({
             account_id: accountId.toLowerCase(),
             platform: platform,
+            user_id: userId, // Add user_id foreign key
             name: c.name,
             value: c.value,
             domain: c.domain,
@@ -288,15 +451,37 @@ export async function pushCookies(accountId: string, platform: 'flipkart' | 'sho
         }));
 
         if (rows.length > 0) {
-            const { error: insError } = await client
-                .from('cookies')
-                .insert(rows);
+            try {
+                // Upsert based on (account_id, platform, name, domain)
+                // Assuming backend has unique constraint on these columns
+                const { error: insError } = await client
+                    .from('cookies')
+                    .upsert(rows, { onConflict: 'account_id, platform, name, domain' });
 
-            if (insError) throw insError;
-            logger.info(`[Cloud] Synced ${rows.length} cookies for ${accountId} (${platform}).`);
+                if (insError) throw insError;
+                logger.info(`[Cloud] Upserted ${rows.length} cookies for ${accountId} (${platform}).`);
+            } catch (err: any) {
+                // FALLBACK: If upsert setup fails or schema issue
+                if (err.message?.includes('user_id') || err.code === '42703') {
+                    const fallbackRows = rows.map((r: any) => {
+                        const { user_id, ...rest } = r;
+                        return rest;
+                    });
+                    const { error: fallbackError } = await client
+                        .from('cookies')
+                        .upsert(fallbackRows, { onConflict: 'account_id, platform, name, domain' });
+
+                    if (fallbackError) throw fallbackError;
+                    logger.debug(`[Cloud] Upserted ${rows.length} cookies (no user_id).`);
+                } else {
+                    // Critical: If UPSERT is not supported or index missing, delete+insert is risky but fallback
+                    logger.warn(`[Cloud] UPSERT failed (${err.message}). Falling back to Delete+Insert (Merge unsafe).`);
+                    await client.from('cookies').delete().eq('account_id', accountId).eq('platform', platform);
+                    await client.from('cookies').insert(rows);
+                }
+            }
         }
     } catch (e: any) {
-        logger.error(`[Cloud] Cookie sync failed for ${accountId}: ${e.message}`);
         logger.error(`[Cloud] Cookie sync failed for ${accountId}: ${e.message}`);
     }
 }
@@ -304,31 +489,70 @@ export async function pushCookies(accountId: string, platform: 'flipkart' | 'sho
 /**
  * Push Local Storage to cloud (SQL Table: local_storage)
  */
-export async function pushLocalStorage(accountId: string, platform: 'flipkart' | 'shopsy') {
+export async function pushLocalStorage(accountId: string, platform: string, directData?: Record<string, any>) {
     const client = getSupabaseAdminClient();
     if (!client) return;
 
     try {
-        const filePath = getStorageFilePath(accountId, platform);
-        if (!await fs.pathExists(filePath)) return;
+        let data = directData;
 
-        const data = await fs.readJSON(filePath);
+        if (!data) {
+            const filePath = getStorageFilePath(accountId, platform);
+            if (await fs.pathExists(filePath)) {
+                data = await fs.readJSON(filePath);
+            }
+        }
+
+        if (!data) return;
+
+        // Lookup userId from DB (Strict DB extraction as requested)
+        let userId: string | null = null;
+        try {
+            const { data: accData } = await client
+                .from('accounts')
+                .select('user_id')
+                .eq('id', accountId.toLowerCase())
+                .maybeSingle();
+
+            if (accData?.user_id) {
+                userId = accData.user_id;
+            }
+        } catch (err) {
+            // ignore
+        }
 
         // Upsert to local_storage table
         // Schema assumed: account_id, platform, data (jsonb), updated_at
         const payload = {
             account_id: accountId.toLowerCase(),
             platform: platform,
+            user_id: userId,
             data: data,
             updated_at: new Date().toISOString()
         };
 
-        const { error } = await client
-            .from('local_storage')
-            .upsert(payload, { onConflict: 'account_id, platform' });
+        try {
+            const { error } = await client
+                .from('local_storage')
+                .upsert(payload, { onConflict: 'account_id, platform' });
 
-        if (error) throw error;
-        logger.info(`[Cloud] Synced Local Storage for ${accountId} (${platform}).`);
+            if (error) throw error;
+            logger.info(`[Cloud] Synced Local Storage for ${accountId} (${platform}).`);
+
+        } catch (err: any) {
+            if (err.message?.includes('user_id') || err.code === '42703') {
+                // Retry without user_id silently
+                const { user_id, ...fallbackPayload } = payload;
+                const { error: fallbackError } = await client
+                    .from('local_storage')
+                    .upsert(fallbackPayload, { onConflict: 'account_id, platform' });
+
+                if (fallbackError) throw fallbackError;
+                logger.debug(`[Cloud] Synced Local Storage (schema has no user_id).`);
+            } else {
+                throw err;
+            }
+        }
     } catch (e: any) {
         logger.error(`[Cloud] LS sync failed for ${accountId}: ${e.message}`);
     }
@@ -337,29 +561,35 @@ export async function pushLocalStorage(accountId: string, platform: 'flipkart' |
 /**
  * Fetch Local Storage from cloud
  */
-export async function fetchLocalStorage(accountId: string, platform: 'flipkart' | 'shopsy'): Promise<Record<string, string> | null> {
+export async function fetchLocalStorage(accountId: string, platform: string): Promise<Record<string, string> | null> {
     const client = getSupabaseAdminClient();
     if (!client) return null;
 
     try {
+        console.log(`[Cloud] Fetching LS for ${accountId} (${platform})...`);
         const { data, error } = await client
             .from('local_storage')
             .select('data')
             .eq('account_id', accountId.toLowerCase())
             .eq('platform', platform)
-            .single();
+            .maybeSingle();
 
         if (error) {
-            if (error.code !== 'PGRST116') { // PGRST116 is 'Row not found' which is fine
-                throw error;
-            }
+            console.error(`[Cloud] DB Error fetching LS: ${error.message} (Code: ${error.code})`);
+            throw error;
+        }
+
+        if (!data) {
+            console.warn(`[Cloud] LS not found in DB for ${accountId} (${platform}) - Row missing`);
             return null;
         }
 
         if (data && data.data) {
-            logger.info(`[Cloud] Fetched Local Storage from DB for ${accountId} (${platform}).`);
+            const keyCount = Object.keys(data.data).length;
+            logger.info(`[Cloud] Fetched Local Storage from DB for ${accountId} (${platform}). Keys: ${keyCount}`);
             return data.data;
         }
+        console.warn(`[Cloud] LS found but empty data column for ${accountId}`);
         return null;
     } catch (e: any) {
         logger.error(`[Cloud] Failed to fetch LS from DB for ${accountId}: ${e.message}`);
@@ -371,7 +601,7 @@ export async function fetchLocalStorage(accountId: string, platform: 'flipkart' 
 /**
  * Fetch cookies for a specific account from cloud database
  */
-export async function fetchCookiesFromCloud(accountId: string, platform: 'flipkart' | 'shopsy'): Promise<any[]> {
+export async function fetchCookiesFromCloud(accountId: string, platform: string): Promise<any[]> {
     const client = getSupabaseAdminClient();
     if (!client) return [];
 
@@ -427,14 +657,36 @@ export async function pullSyncData() {
     if (!client) return { success: false, error: 'Cloud sync not enabled' };
 
     try {
+        // --- Generic Pagination Helper ---
+        const fetchAllRows = async (table: string) => {
+            let allRows: any[] = [];
+            let from = 0;
+            const limit = 1000;
+            let hasMore = true;
+            
+            while (hasMore) {
+                const { data, error } = await client
+                    .from(table)
+                    .select('*')
+                    .range(from, from + limit - 1);
+                    
+                if (error) throw error;
+                
+                if (data && data.length > 0) {
+                    allRows = allRows.concat(data);
+                    from += limit;
+                    if (data.length < limit) hasMore = false;
+                } else {
+                    hasMore = false;
+                }
+            }
+            return allRows;
+        };
+
         // 1. Pull Accounts
-        const { data: dbAccounts, error: accError } = await client
-            .from('accounts')
-            .select('*');
+        const dbAccounts = await fetchAllRows('accounts');
 
-        if (accError) throw accError;
-
-        if (dbAccounts) {
+        if (dbAccounts && dbAccounts.length > 0) {
             // Reconstruct accounts.json format
             const accounts = dbAccounts.map((row: any) => ({
                 id: row.id,
@@ -442,6 +694,7 @@ export async function pullSyncData() {
                 identifier: row.identifier,
                 status: row.status,
                 lastLoginAt: row.last_login_at,
+                proxy: row.proxy,
                 // Spread details back
                 ...row.details
             }));
@@ -451,14 +704,10 @@ export async function pullSyncData() {
         }
 
         // 2. Pull Cookies
-        // We pull ALL cookies. If dataset is huge, might need to optimize this.
-        const { data: dbCookies, error: cookError } = await client
-            .from('cookies')
-            .select('*');
+        // We pull ALL cookies. If dataset is huge, this fetches completely using pagination.
+        const dbCookies = await fetchAllRows('cookies');
 
-        if (cookError) throw cookError;
-
-        if (dbCookies) {
+        if (dbCookies && dbCookies.length > 0) {
             // Group by account_id + platform
             const grouped: Record<string, any[]> = {};
 
@@ -504,7 +753,42 @@ export async function pullSyncData() {
 /**
  * Log user activity to Supabase
  */
+import { DATA_DIR } from './config.js';
+
+// ... (existing imports)
+
+/**
+ * Log user activity to Supabase (and Local File)
+ */
 export async function logActivity(username: string, action: string, data: any = {}) {
+    // 1. Local Log (Always works)
+    try {
+        const localPath = path.join(DATA_DIR, 'activity.json');
+        let logs: any[] = [];
+        if (await fs.pathExists(localPath)) {
+            logs = await fs.readJSON(localPath);
+        }
+
+        const logEntry = {
+            username,
+            action,
+            platform: data.platform || null,
+            accountId: data.accountId || null,
+            details: data,
+            timestamp: new Date().toISOString()
+        };
+
+        // Prepend new log
+        logs.unshift(logEntry);
+        // Limit to 100 items to prevent bloat
+        if (logs.length > 100) logs = logs.slice(0, 100);
+
+        await fs.writeJSON(localPath, logs, { spaces: 2 });
+    } catch (e: any) {
+        logger.error(`[Cloud] Failed to write local activity log: ${e.message}`);
+    }
+
+    // 2. Cloud Log (If configured)
     const client = getSupabaseAdminClient();
     if (!client) return;
 
@@ -523,9 +807,53 @@ export async function logActivity(username: string, action: string, data: any = 
             device_info: deviceInfo,
             timestamp: new Date().toISOString()
         });
-        logger.info(`[Cloud] Activity logged: ${action} by ${username}`);
+        logger.info(`[Cloud] Activity logged to DB: ${action}`);
     } catch (e: any) {
-        logger.error(`[Cloud] Failed to log activity: ${e.message}`);
+        logger.error(`[Cloud] Failed to log activity to DB: ${e.message}`);
+    }
+}
+
+/**
+ * Bulk update account ownership across all tables (accounts, cookies, local_storage, fingerprints)
+ */
+export async function updateAccountOwnershipInDB(accountIds: string[], targetUserId: string) {
+    const client = getSupabaseAdminClient();
+    if (!client) return;
+
+    const ids = accountIds.map(id => id.toLowerCase().trim());
+    
+    try {
+        logger.info(`[Cloud] Transferring ownership of ${ids.length} accounts to ${targetUserId}`);
+
+        // Update accounts table
+        const { error: accError } = await client
+            .from('accounts')
+            .update({ user_id: targetUserId, updated_at: new Date().toISOString() })
+            .in('id', ids);
+        if (accError) throw accError;
+
+        // Update associate data tables
+        const tables = ['cookies', 'local_storage', 'fingerprints'];
+        for (const table of tables) {
+            const column = (table === 'cookies' || table === 'local_storage' || table === 'fingerprints') ? 'account_id' : 'id';
+            // Note: cookies and local_storage use account_id
+            const { error } = await client
+                .from(table)
+                .update({ user_id: targetUserId })
+                .in('account_id', ids);
+            
+            if (error) {
+                // Ignore if table doesn't have user_id column yet (legacy schema)
+                if (error.code !== '42703') {
+                    logger.warn(`[Cloud] Failed to update user_id in ${table}: ${error.message}`);
+                }
+            }
+        }
+
+        logger.info(`[Cloud] Successfully transferred ownership of ${ids.length} accounts to ${targetUserId}`);
+    } catch (e: any) {
+        logger.error(`[Cloud] updateAccountOwnershipInDB failed: ${e.message}`);
+        throw e;
     }
 }
 
@@ -707,3 +1035,10 @@ export async function deleteCloudAccount(accountId: string) {
         throw e;
     }
 }
+/**
+ * Notification stubs for Supabase (TBD implementation)
+ */
+export async function listNotifications(userId?: string) { return []; }
+export async function createNotification(n: any) { }
+export async function updateNotificationStatus(id: string, status: string) { }
+export async function getNotification(id: string) { return null; }

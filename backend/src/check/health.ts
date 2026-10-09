@@ -6,7 +6,7 @@ import { generateFingerprint } from '../fingerprint.js';
 import logger, { getAccountLogger } from '../log.js';
 import { browsers } from '../browserManager.js';
 
-export async function checkAccountHealth(platform: 'flipkart' | 'shopsy', accountId: string) {
+export async function checkAccountHealth(platform: string, accountId: string) {
     const log = getAccountLogger(accountId);
     const profilePath = path.join(PROFILES_DIR, platform, accountId, 'userDataDir');
 
@@ -72,7 +72,11 @@ export async function checkAccountHealth(platform: 'flipkart' | 'shopsy', accoun
         const page = await context.newPage();
 
         // Navigate to homepage instead of account page for faster, more reliable check
-        const url = platform === 'flipkart' ? 'https://www.flipkart.com/' : 'https://www.shopsy.in/';
+        let url = 'https://www.flipkart.com/';
+        if (platform === 'shopsy') url = 'https://www.shopsy.in/';
+        else if (platform === 'iqoo') url = 'https://www.iqoo.com/in';
+        else if (platform === 'vivo') url = 'https://www.vivo.com/in';
+        else if (platform === 'redmi' || platform === 'xiaomi') url = 'https://www.mi.com/in/';
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
         // Wait a bit for dynamic content
@@ -89,13 +93,19 @@ export async function checkAccountHealth(platform: 'flipkart' | 'shopsy', accoun
             const noLoginPrompt = !content.includes('Enter Email/Mobile');
 
             healthy = hasAccountMenu && hasCartAccess && noLoginPrompt;
-        } else {
+        } else if (platform === 'shopsy') {
             // Shopsy: logged-in users see "You" instead of login prompt
             const hasYouMenu = content.includes('>You<') || content.includes('You</');
             const hasCartAccess = content.includes('Cart');
             const noLoginPrompt = !content.includes('Login') || content.includes('Logout');
 
             healthy = (hasYouMenu || hasCartAccess) && noLoginPrompt;
+        } else {
+            // Generic check for others: look for 'Logout' or 'Account' or 'Profile'
+            const hasLogout = content.toLowerCase().includes('logout') || content.toLowerCase().includes('sign out');
+            const hasProfile = content.toLowerCase().includes('profile') || content.toLowerCase().includes('account');
+            const noLogin = !content.toLowerCase().includes('sign in') && !content.toLowerCase().includes('login');
+            healthy = (hasLogout || hasProfile) && noLogin;
         }
 
         await context.close();

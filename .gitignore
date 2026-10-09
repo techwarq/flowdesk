@@ -5,26 +5,43 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
+# Dependencies & build output
 node_modules
 dist
 dist-ssr
+dist_electron
+backend/dist
+backend/browsers
 *.local
 
-# Editor directories and files
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
 
-# Local Data
-backend/data
+# Secrets & env
+.env
+.env.*
+!.env.example
 
-# Build Output
-dist_electron
+# Local data: accounts, cookies, browser profiles, sessions
+data/
+backend/data/
+backend/.gemini/
+backend/session_data.txt
+
+# Debug dumps & scratch files
+backend/*.html
+backend/*.png
+backend/scratch_*.mjs
+backend/0
+backend/test_*.ts
+backend/check_*.ts
+backend/dom_inspect.ts
+backend/get_session.ts
+debug_*.js
+get_*_cookies.ts
+*.code-workspace

@@ -24,7 +24,7 @@ const MOBILE_DEVICES = [
     devices['iPhone 12'], // Careful with iPhone emulation on Chromium, usually fine for detection
 ];
 
-export function generateFingerprint(platform: 'flipkart' | 'shopsy', seed: string): Fingerprint {
+export function generateFingerprint(platform: string, seed: string): Fingerprint {
     console.log(`[Fingerprint] Generating for ${platform} with seed: ${seed}`);
 
     // Simple deterministic generation based on seed string sum
